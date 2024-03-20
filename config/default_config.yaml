@@ -1,0 +1,94 @@
+# input schema and table names
+input_schema: 'inputs_prague'
+
+# default domain and case values and domain parameters
+domain:
+    name: 'case_name'
+    scenario: 'scenario_00'
+    parent_domain_schema: ''
+    dx: 10.0
+    dy: 10.0
+    dz: 10.0
+    nx: 128
+    ny: 128
+    cent_x: 459180
+    cent_y: 5547800
+
+default_height:
+    0: 6    # [m]
+    1: 6    # [m] Residential, < 1950	33
+    2: 6    # [m] Residential, 1950 - 2000	33
+    3: 6    # [m] Residential, > 2000	33
+    4: 12   # [m] Office, < 1950	33
+    5: 12   # [m] Office, 1950 - 2000	33
+    6: 12   # [m] Office, > 2000	33
+
+# case table names
+tables:
+    grid:                   'grid'
+    dem:                    'dem'
+    buildings_height:       'buildings'   # copied DEM from INPUTS
+    buildings_grid:         'buildings_grid' # for top 2d and 3d, gridded table
+    landcover:              'landcover'
+    buildings_offset:       'buildings_offset'
+    
+idx:
+    landcover:              'lid'
+
+origin_time: '1970-01-01 00:00:00'
+
+# maximal distance for looking of neighbour building heights
+maxbuildingdisance: 5
+
+# global attributes of the static driver netcdf file
+# fill values
+fill_values:
+    b: -127
+    i: -9999
+    f4: -9999.0
+    f8: -9999.0
+
+ncprops:
+    acronym: 'ICS'
+    author: 'Jaroslav Resler, resler@cs.cas.cz'
+    campaign: ''
+    comment: ''
+    contact_person: ''
+    data_content: ''
+    dependencies: ''
+    institution: 'ICS Prague'
+    keywords: ''
+    location: ''
+    palm_version: '6.0'
+    references: ''
+    rotation_angle: 0.0
+    site: domain
+    source: ''
+    version: ''
+
+# definitions of the basic constants
+# needed for creation of static driver according to PID specification
+ndims:
+    nwater_pars: 7                 # number of elements in water_pars
+    
+ground:
+    soil_type_default: 3   # default soil type medium-fine in terms of porosity
+
+# definition of the landcover type ranges
+type_range:
+    vegetation_min: 100
+    vegetation_max: 199
+    pavement_min: 200
+    pavement_max: 299
+    water_min: 300
+    water_max: 399
+    building_min: 900
+    building_max: 999
+
+water_pars_temp:       # assign water body temperature according to landcover type
+    1: 283.15
+    2: 283.15
+    3: 283.15
+    4: 283.15
+    5: 283.15
+    6: 283.15

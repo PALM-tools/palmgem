@@ -1,0 +1,26 @@
+# postgresql/postgis server
+pg_host: 'localhost'
+pg_port: 5432
+pg_user: 'unknown'
+pg_password: 'unknown'
+database: 'palm_static'
+pg_owner: 'palm'
+
+logs:
+    level: 4
+    level_buildings: -1
+    level_check_consistency: -1
+    level_landcover: -1
+    
+visual_check:
+    enabled: True
+    show_plots: False
+    
+# reference coordinate system of inputs (in case the vector or raster shape does not contain srid)
+srid: 32633
+dem_srid: 3035
+srid_input: 32633
+srid_palm: 32633
+srid_utm: 32633
+# projection lon-lat
+srid_wgs84: 4326

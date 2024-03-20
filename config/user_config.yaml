@@ -1,0 +1,22 @@
+pg_user: 'your_pg_user'
+pg_password: 'your_pg_password'
+database: 'palm_static'
+
+scratch: False
+create_grid: True # TODO: create this switches to only calculate what user wants {navaznost}
+#palm_debug = False
+
+input_schema: 'inputs_prague'
+gisinputs: 'DEJV3'
+
+domain:
+    name: 'legerova_02_martin'
+    scenario:   'validation_summer'
+    parent_domain_schema: ''
+    dx: 2.0
+    dy: 2.0
+    dz: 0.0
+    nx: 100
+    ny: 100
+    cent_x: 459180
+    cent_y: 5547800
