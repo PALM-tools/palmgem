@@ -1,0 +1,20 @@
+input_schema: 'name_of_input_schema'
+pg_user: 'user_name'
+pg_password: 'user_pg_password'
+database: 'name_pg_database'
+srid_input: 32633
+srid_palm: 32633
+
+domain:
+    name: 'domain_name'
+    scenario: 'scenarion_name'
+    parent_domain_schema: 'name_of_parent_schema_if_exists'
+    dx: 10.0   # resolution in x direction
+    dy: 10.0   # resolution in y direction
+    dz: 10.0   # resolution in z direction
+    nx: 128    # number of gridcells in x direction
+    ny: 128    # number of gridcells in y direction
+    cent_x: 617146.0   # domain center, x coordinates in srid_palm
+    cent_y: 5450281.0  # domain center, y coordinates in srid_palm
+
+origin_time: '2019-07-27 00:00:00'   # origin time of simulation
