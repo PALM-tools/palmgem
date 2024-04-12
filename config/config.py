@@ -233,7 +233,7 @@ def load_config(argv, cfg_default_path='config/default_config.yaml', cfg_default
         os.mkdir(os.path.join('visual_check'))
 
     # create file for visual check
-    if cfg.visual_check.enabled and not os.path.isdir(cfg.visual_check.path):
+    if (cfg.visual_check.enabled or cfg.slanted_pars.do_vtk) and not os.path.isdir(cfg.visual_check.path):
         os.mkdir(cfg.visual_check.path)
 
     #create file for netcdf outputs

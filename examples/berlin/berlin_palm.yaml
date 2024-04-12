@@ -1,0 +1,17 @@
+input_schema: 'inputs_berlin'
+srid_input: 32633
+srid_palm: 32633
+
+domain:
+    name: 'berlin'
+    scenario: ''
+    parent_domain_schema: ''
+    dx: 5.0
+    dy: 5.0
+    dz: 5.0
+    nx: 256
+    ny: 256
+    cent_x: 389815.0
+    cent_y: 5819963.0
+
+origin_time: '2019-07-27 00:00:00'

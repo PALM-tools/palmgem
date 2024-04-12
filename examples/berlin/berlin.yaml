@@ -1,0 +1,13 @@
+srid_input: 32633
+srid_palm: 32633
+srid: 32633
+
+domain:
+    name: 'inputs_berlin'
+    scenario: ''
+    xl: 386460
+    xh: 392101
+    yl: 5817423
+    yh: 5822088
+    crop_domain: True
+    fill_boundary: False

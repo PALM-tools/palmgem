@@ -61,6 +61,11 @@ We have prepared several example testcases \
 | Bergen | 5.120 x 5.120 | 512 x 512 | 11 [min] |
 | Bergen | 10.240 x 10.240 | 1024 x 1024 |  [min] |
 | Bergen | 20.480 x 20.480 | 2048 x 2048 | 20 [h] |
+| Berlin | 0.320 x 0.320 | 64 x 64 | 13 [s] |
+| Berlin | 0.640 x 0.640 | 128 x 128 | 134 [s] |
+| Berlin | 1.280 x 1.280 | 256 x 256 | 123 [s] |
+| Berlin | 2.560 x 2.560 | 512 x 512 | 30 [min] |
+| Berlin | 4.000 x 4.000 | 800 x 800 | 67 [min] |
 
 ## Example static driver
 

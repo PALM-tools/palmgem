@@ -1,0 +1,13 @@
+srid_input: 32633
+srid_palm: 32633
+srid: 32633
+
+domain:
+    name: 'inputs_prague'
+    scenario: ''
+    xl: 456419
+    xh: 463116
+    yl: 5546182
+    yh: 5553244
+    crop_domain: True
+    fill_boundary: False

@@ -1,12 +1,4 @@
-import sys
-from datetime import datetime
-from pathlib import Path
-from math import ceil
 import numpy as np
-from netCDF4 import Dataset
-import pandas as pd
-import matplotlib.pyplot  as plt
-import os
 from config.logger import *
 
 def create_fishnet(cfg, connection, cur):
@@ -128,7 +120,7 @@ def calculate_grid_extend(cfg, connection, cur):
         .format(cfg.domain.case_schema, cfg.tables.grid)
     cur.execute(sqltext)
     gxmin, gxmax, gymin, gymax = cur.fetchone()[0:4]
-    sqltext = 'select ST_MakeEnvelope(%s, %s, %s, %s, %s)'
+    sqltext = 'SELECT ST_MakeEnvelope(%s, %s, %s, %s, %s)'
     cur.execute(sqltext, (gxmin, gymin, gxmax, gymax, cfg.srid_palm,))
     connection.commit()
     grid_ext = cur.fetchone()[0]
@@ -326,6 +318,60 @@ def copy_rasters_from_input(grid_ext, cfg, connection, cur):
             exit(1)
     return rtabs
 
+def check_buildings(cfg, connection, cur, rtabs, grid_ext):
+    """ Check if USM are present in domain """
+    verbose('Checking if buildings raster is present in inputs')
+    cfg._settings['has_buildings'] = False
+    if cfg.tables.buildings_height in rtabs:
+        cfg._settings['has_buildings'] = True
+    debug('Modification of buildings that intersect with domain boundary or are adjacet to domain extent')
+    if cfg.force_building_boundary:
+        # TODO: join with nearest adjacent landcover
+        sqltext = 'UPDATE "{0}"."{1}" AS l SET type = 202 ' \
+                  'WHERE type >= {2} AND ST_Distance(l.geom, ST_Boundary(%s::geometry)) < {3}'\
+                  .format(cfg.domain.case_schema, cfg.tables.landcover, cfg.type_range.building_min,
+                          cfg.force_building_boundary_dist * cfg.domain.dx )
+        cur.execute(sqltext, (grid_ext,))
+        sql_debug(connection)
+        connection.commit()
+
+    debug('Check if buildings grid will be defined in more that 3 grid cells')
+    # TODO: join with nearest adjacent landcover
+    sqltext = 'UPDATE "{0}"."{1}" AS l SET type = 202 ' \
+              'WHERE type >= {2} AND ST_Area(geom) < {3}'\
+              .format(cfg.domain.case_schema, cfg.tables.landcover, cfg.type_range.building_min,
+                      3.0 ** 2 * cfg.domain.dx ** 2 )
+    cur.execute(sqltext)
+    sql_debug(connection)
+    connection.commit()
+
+    verbose('Checking if buildings (type >= 900) are present in landover')
+    sqltext = 'SELECT COUNT(*) FROM "{0}"."{1}" WHERE type BETWEEN {2} AND {3}'\
+              .format(cfg.domain.case_schema, cfg.tables.landcover,
+                      cfg.type_range.building_min, cfg.type_range.building_max,)
+    cur.execute(sqltext)
+    buildings_counts = cur.fetchone()[0]
+    sql_debug(connection)
+    connection.commit()
+    if buildings_counts > 0:
+        cfg._settings['has_buildings'] = True
+
+    if cfg.force_lsm_only:
+        if cfg.tables.buildings_height in rtabs:
+            tab = cfg.tables.buildings_height
+            warning('Because of force_lsm_only, delete table {} from case', tab)
+            rtabs.remove(tab)
+            cur.execute('DROP TABLE "{}"."{}"'.format(cfg.domain.case_schema, tab))
+            sql_debug(connection)
+            connection.commit()
+
+        debug('Modification of all building types to LSM type')
+        sqltext = 'UPDATE "{0}"."{1}" AS l SET type = 202 ' \
+                  'WHERE type >= {2}'.format(cfg.domain.case_schema, cfg.tables.landcover, cfg.type_range.building_min)
+        cur.execute(sqltext)
+        sql_debug(connection)
+        connection.commit()
+
 def calculate_terrain_height(cfg, connection, cur):
     """ Calculate terrain height for each grid cell in PALM domain.
         Height is calculated from raster table DEM in grid center.
@@ -400,11 +446,14 @@ def calculate_origin_z_oro_min(cfg, connection, cur):
         Calculation of gridded height in table grid.
     """
     progress('Calculation of origin_z and oro_min')
+    # calculate origin_z as bottom of the current or parent domain
     sqltext = 'select min(height) from "{}".{}'. \
-        format(cfg.domain.case_schema, cfg.tables.grid)
+        format(cfg.domain.case_schema if cfg.domain.parent_domain_schema == ''
+               else cfg.domain.parent_domain_schema, cfg.tables.grid)
     cur.execute(sqltext)
-    cfg.domain._settings['oro_min'] = cur.fetchone()[0]
-    debug('Oro_min is in height level: {}', cfg.domain.oro_min)
+    cfg.domain._settings['origin_z'] = cur.fetchone()[0]
+    cfg.domain._settings['oro_min'] = cfg.domain.origin_z
+    debug('Origin_z is in height level: {}', cfg.domain.origin_z)
 
     # calculate grid nz height
     sqltext = 'UPDATE "{0}"."{1}" SET nz = CAST((height - {2})/{3} AS INTEGER)'.format(
@@ -412,20 +461,6 @@ def calculate_origin_z_oro_min(cfg, connection, cur):
     cur.execute(sqltext)
     sql_debug(connection)
     connection.commit()
-
-    # calculate origin_z as bottom of the current or parent domain
-    sqltext = 'select min(height) from "{}".{}'. \
-        format(cfg.domain.case_schema if cfg.domain.parent_domain_schema == ''
-               else cfg.domain.parent_domain_schema, cfg.tables.grid)
-    cur.execute(sqltext)
-    cfg.domain._settings['origin_z'] = cur.fetchone()[0]
-    debug('Origin_z is in height level: {}', cfg.domain.origin_z)
-
-    sqltext = 'select min(height) from "{}".{}'. \
-        format(cfg.domain.case_schema, cfg.tables.grid)
-    cur.execute(sqltext)
-    cfg.domain._settings['oro_min'] = cur.fetchone()[0]
-    debug('Oro_min is in height level: {}', cfg.domain.oro_min)
 
 def connect_landcover_grid(cfg, connection, cur):
     """ Join landcover with grid """
@@ -460,8 +495,47 @@ def connect_landcover_grid(cfg, connection, cur):
     sql_debug(connection)
     connection.commit()
 
+def fill_cortyard(cfg, connection, cur):
+    """ fill the cortyard that are surrounded by buildings and their size in grid is lower that user defined value """
+    progress('Filling cortyard')
+    debug('Finding all suspicious polygons')
+    sqltext = 'WITH ll AS ( ' \
+              ' SELECT lid  ' \
+              ' FROM "{0}"."{1}" AS l' \
+              ' WHERE (SELECT COUNT(*) FROM "{0}"."{1}" AS nb WHERE type BETWEEN 0 AND 899 AND ST_Touches(nb.geom, l.geom) AND nb.lid != l.lid) = 0  ' \
+              '        ' \
+              '        AND l.type BETWEEN 0 AND 899' \
+              ' ) ' \
+              'SELECT g.lid ' \
+              'FROM "{0}"."{2}" AS g, ll ' \
+              'WHERE g.lid IN (ll.lid) ' \
+              'GROUP BY g.lid ' \
+              'HAVING COUNT(*) < {3}'.format(cfg.domain.case_schema, cfg.tables.landcover, cfg.tables.grid, cfg.cortyard_fill.count)
+    cur.execute(sqltext)
+    lids = cur.fetchall()
+    sql_debug(connection)
+    connection.commit()
+
+    lids_list = [x[0] for x in lids]
+
+    if len(lids_list) == 0:
+        return
+
+    debug('Modification of those cortyard into nearest building type')
+    verbose('In landcover')
+    sqltext = 'UPDATE "{0}"."{1}" AS l SET (type, katland, albedo, emisivita) = ' \
+              ' (SELECT type, katland, albedo, emisivita FROM "{0}"."{1}" AS b ' \
+              '   WHERE type BETWEEN 900 AND 999 ' \
+              '   ORDER BY ST_Distance(l.geom, b.geom) LIMIT 1) ' \
+              'WHERE lid IN {2}'.format(cfg.domain.case_schema, cfg.tables.landcover, tuple(lids_list))
+    cur.execute(sqltext,)
+    sql_debug(connection)
+    connection.commit()
+
 def fill_missing_holes_in_grid(cfg, connection, cur):
     """ Fill empty 3d grid cell that has more than 3 neighbors, replicating process in PALM program to omit creating grid cell with default configuration """
+    if cfg.force_lsm_only:
+        return
     cur.callproc('palm_fill_building_holes', [cfg.domain.case_schema, cfg.tables.grid, cfg.tables.landcover,
                                               cfg.type_range.building_min, cfg.type_range.building_max,
                                               cfg.domain.nx, cfg.domain.ny, cfg.logs.level])
@@ -573,9 +647,179 @@ def filling_grid(cfg, connection, cur):
     filled_grids.sort()
     return filled_grids
 
+def fill_topo_v2(cfg, connection, cur):
+    """ Fill all topologies that satisfies condition:
+        Connected ${topo_fill_v2_count} air grid cell in one k-th layer
+        Algorithm:
+        While something was adjusted loop:
+            Loop k = 0 .. nz_max+1
+                Create temp table with joined terrain and buildings
+                Filter and Union all adjacent grids with nz = k -> table grid_k
+                Filter and Union all adjacent grids with nz > k -> table grid_higher
+                Select all polygons with ST_Area() <= dx*dy*{topo_fill_v2_count} that are surrounded by only grid_higher
+                    Do intersection with temp table and increase height in those {j,i} grid cells.
+                Save info about which ones {j,i} were filled
+
+        Move temp table back do grid and buildings grid
+        Delete temp table and grid_k, grid_higher
+    """
+    progress('Filling topology using fill_topo_v2')
+    debug('Create nz_temp')
+    sqltext = 'CREATE TABLE "{2}"."nz_temp" AS ' \
+              'SELECT g.id, g.i AS i, g.j AS j, g.geom AS geom,  ' \
+              'CASE WHEN b.height IS NOT NULL AND NOT b.is_bridge THEN b.nz+bo.max_int' \
+              '     ELSE g.nz END AS nz, ' \
+              'CASE WHEN b.height IS NOT NULL AND NOT b.is_bridge THEN true ' \
+              '     ELSE false END AS is_building ' \
+              'FROM "{2}"."{3}" AS g ' \
+              'LEFT OUTER JOIN "{2}"."{4}" AS b ON g.id=b.id  ' \
+              'LEFT OUTER JOIN "{2}"."{5}" AS bo ON b.lid = bo.lid'.format(
+        cfg.domain.oro_min, cfg.domain.dz, cfg.domain.case_schema, cfg.tables.grid,
+        cfg.tables.buildings_grid, cfg.tables.buildings_offset, cfg.domain.oro_min)
+    cur.execute(sqltext)
+    sql_debug(connection)
+    connection.commit()
+
+    debug('Add primary keys to nz_temp')
+    sqltext = 'ALTER TABLE "{0}"."nz_temp" ADD primary key (id)'.format(cfg.domain.case_schema)
+    cur.execute(sqltext)
+    sql_debug(connection)
+    connection.commit()
+
+    debug('Create geom index on nz_temp')
+    sqltext = 'CREATE INDEX IF NOT EXISTS nz_temp_geom_idx on "{0}"."nz_temp" using gist(geom)' \
+        .format(cfg.domain.case_schema)
+    cur.execute(sqltext)
+    sql_debug(connection)
+
+    debug('Start filling grids')
+    verbose('Find max nz')
+    sqltext = 'SELECT MAX(nz) FROM "{0}"."nz_temp"'.format(cfg.domain.case_schema)
+    cur.execute(sqltext)
+    nz_max = cur.fetchone()[0]
+    sql_debug(connection)
+    connection.commit()
+
+    sqltext_k =      'DROP TABLE IF EXISTS "{0}".k; ' \
+                     'CREATE TABLE "{0}".k AS  ' \
+                     'SELECT (ST_Dump(ST_Union(geom))).geom ' \
+                     'FROM "{0}"."nz_temp" ' \
+                     'WHERE nz={1}'
+    sqltext_kplus =  'DROP TABLE IF EXISTS "{0}".kplus; ' \
+                     'CREATE TABLE "{0}".kplus AS  ' \
+                     'SELECT (ST_Dump(ST_Union(geom))).geom ' \
+                     'FROM "{0}"."nz_temp" ' \
+                     'WHERE nz>{1}'
+    sqltext_kminus = 'DROP TABLE IF EXISTS "{0}".kminus; ' \
+                     'CREATE TABLE "{0}".kminus AS  ' \
+                     'SELECT (ST_Dump(ST_Union(geom))).geom ' \
+                     'FROM "{0}"."nz_temp" ' \
+                     'WHERE nz<{1}'
+    sqltext_gist   = 'CREATE INDEX IF NOT EXISTS {1}_geom_idx on "{0}"."{1}" using gist(geom)'
+    sqltext_find   = 'WITH gg AS (SELECT geom FROM "{0}".k AS gkk ' \
+                     '            WHERE ST_Area(gkk.geom) < {1} AND ' \
+                     '                  (SELECT COUNT(*) AS count ' \
+                     '                   FROM "{0}".kminus AS gkm ' \
+                     '                   WHERE ST_Touches(gkk.geom, gkm.geom)) = 0 ) ' \
+                     'SELECT id, i, j, nz FROM "{0}"."nz_temp" AS g, gg ' \
+                     'WHERE ST_Intersects(ST_Centroid(g.geom), gg.geom)'\
+                     .format(cfg.domain.case_schema, cfg.domain.dx * cfg.domain.dy * cfg.topo_fill_v2.count+0.1)
+
+    sqltext_update = 'UPDATE "{1}"."nz_temp" SET ' \
+                     'nz = nz + 1 ' \
+                     'WHERE id IN {0}'
+    sqltext_update_1 = 'UPDATE "{1}"."nz_temp" SET ' \
+                       'nz = nz + 1 ' \
+                       'WHERE id = {0}'
+    sqltext_count  = 'SELECT COUNT(*) FROM "{0}"."{1}"'
+
+    filled_grids = []
+    fillings = 0
+    for k in range(nz_max+2):
+        verbose('\tk: {}', k)
+        extra_verbose('\tCreate k table, with an geom index')
+        cur.execute(sqltext_k.format(cfg.domain.case_schema, k))
+        cur.execute(sqltext_gist.format(cfg.domain.case_schema, 'k'))
+        cur.execute(sqltext_count.format(cfg.domain.case_schema, 'k'))
+        k_count = cur.fetchone()[0]
+        if k_count == 0:
+            continue
+        extra_verbose('\tCreate kminus table')
+        cur.execute(sqltext_kminus.format(cfg.domain.case_schema, k))
+        cur.execute(sqltext_gist.format(cfg.domain.case_schema, 'kminus'))
+        # extra_verbose('\tCreate kplus table')
+        # cur.execute(sqltext_kplus.format(cfg.domain.case_schema, k))
+        # cur.execute(sqltext_gist.format(cfg.domain.case_schema, 'kplus'))
+        sql_debug(connection)
+        connection.commit()
+        extra_verbose('\tFind grids to update')
+        cur.execute(sqltext_find, (cfg.srid_palm,))
+        missings = cur.fetchall()
+        if len(missings) == 0:
+            continue
+        filled_grids.append([missings])
+        fillings += len(missings)
+        id, i, j, nz = [x[0] for x in missings], [x[1] for x in missings], [x[2] for x in missings], [x[3] for x in missings]
+        for ii, jj in zip(i, j):
+            extra_verbose('In filling grid; filling [j, i] = [{},{}] ', jj, ii)
+        extra_verbose('\tCorrection of missing grid height in {} grid points', len(missings))
+        if len(i) == 1:
+            cur.execute(sqltext_update_1.format(id[0], cfg.domain.case_schema))
+        else:
+            cur.execute(sqltext_update.format(tuple(id), cfg.domain.case_schema))
+        sql_debug(connection)
+        connection.commit()
+
+    verbose('{} number of grid has been filled', fillings)
+
+    debug('Done with filling')
+    sql_debug(connection)
+    connection.commit()
+
+    # debug('Add primary keys to nz_temp')
+    # sqltext = 'ALTER TABLE "{0}"."nz_temp" ADD primary key (i,j)'.format(cfg.domain.case_schema)
+    # cur.execute(sqltext)
+    # sql_debug(connection)
+    # connection.commit()
+
+    # sqltext = 'ALTER TABLE "{0}"."nz_temp" DROP CONSTRAINT id'.format(cfg.domain.case_schema, rel, prev_ui)
+
+    # update nz, height in grid
+    debug('Updating nz, height in grid')
+    sqltext = 'UPDATE "{0}"."{1}" AS g SET nz = nt.nz' \
+              '   FROM "{0}"."nz_temp" AS nt ' \
+              '   WHERE g.id=nt.id AND NOT is_building'.format(
+                cfg.domain.case_schema, cfg.tables.grid)
+    cur.execute(sqltext)
+
+    # update nz, height in buildings_grid
+    debug('Updating nz, height in buildings grid')
+    sqltext = 'UPDATE "{0}"."{1}" AS b SET nz = (SELECT nt.nz - bo.max_int' \
+              '   FROM "{0}"."nz_temp" AS nt ' \
+              '   LEFT OUTER JOIN "{0}"."{3}"  AS bo ON b.lid = bo.lid' \
+              '   WHERE nt.is_building AND b.id = nt.id) ' \
+              ' WHERE NOT b.is_bridge'.format(
+                cfg.domain.case_schema, cfg.tables.buildings_grid, cfg.domain.oro_min, cfg.tables.buildings_offset)
+    cur.execute(sqltext)
+
+    sql_debug(connection)
+    connection.commit()
+
+    debug('Dropping temp table')
+    cur.execute('DROP TABLE "{0}"."nz_temp"'.format(cfg.domain.case_schema))
+    cur.execute('DROP TABLE "{0}".k'.format(cfg.domain.case_schema))
+    cur.execute('DROP TABLE "{0}".kminus'.format(cfg.domain.case_schema))
+    # cur.execute('DROP TABLE "{0}".kplus'.format(cfg.domain.case_schema))
+    sql_debug(connection)
+    connection.commit()
+
+    filled_grids.sort()
+    return filled_grids
+
 def connect_buildings_height(cfg, connection, cur):
     """ Connection of raster building heights with grid and creating special buildings_grid"""
-
+    if cfg.force_lsm_only:
+        return
     change_log_level(cfg.logs.level_buildings)
 
     progress('Calculate building heights')
@@ -770,33 +1014,53 @@ def connect_buildings_height(cfg, connection, cur):
     connection.commit()
 
     # fill holes in grid
-    debug('Filling holes in grid')
-    filled_grids = [0,0]
+    progress('Filling holes in grid')
+    filled_grids = [0, 0]
     all_filled = []
+
+    if cfg.topo_fill_v2.apply:
+        filled_grids = fill_topo_v2(cfg, connection, cur)
+        all_filled.append(filled_grids)
+
     while len(filled_grids) > 0:
         filled_grids = filling_grid(cfg, connection, cur)
         all_filled.append(filled_grids)
 
     restore_log_level(cfg)
 
-# Procedure creating static driver
-def nc_create_file(filename):
-    fp = Path(filename)
-    if fp.exists():
-        if fp.is_dir():
-            error("Error: {} is existing directory!", filename)
-            sys.exit(1)
-        else:
-            debug("Delete existing file: {}", filename)
-            fp.unlink()
-    # create new file
-    try:
-        ncfile = Dataset(filename, "w", format="NETCDF4")
-        debug("Created: {}.", filename)
-    except FileNotFoundError:
-        error("Error. Could not create file: {}!", filename)
-        ncfile = None
-    return ncfile
+def update_force_cyclic(cfg, connection, cur):
+    """ In case of force cyclic option, force terrain changes to satisfy cyclic boundary condition """
+    progress('Updating nz, height in grid table in order to fulfill cyclic boundary condition')
+    verbose('Update front - back cycling bc')
+    j_to_floor = cfg.force_cyclic_nc
+    i_to_floor = cfg.force_cyclic_nc
+    j_to_modifies = [j for j in range(j_to_floor)] + [cfg.domain.ny - 1 - j for j in range(j_to_floor + 1)]
+    i_to_modifies = [i for i in range(i_to_floor)] + [cfg.domain.nx - 1 - i for i in range(i_to_floor + 1)]
+    for j_to_modify in j_to_modifies:
+        verbose('Updating j level: {}', j_to_modify)
+        sqltext = 'WITH gf AS (SELECT i, height, nz FROM "{0}"."{1}" WHERE j = {3}) ' \
+                  'UPDATE "{0}"."{1}" AS g SET (nz, height) =  ' \
+                  '   (gf.nz, gf.height)  ' \
+                  'FROM gf  ' \
+                  'WHERE gf.i = g.i AND j = {2}' \
+            .format(cfg.domain.case_schema, cfg.tables.grid, j_to_modify, j_to_floor)
+        cur.execute(sqltext)
+        sql_debug(connection)
+        connection.commit()
+
+    verbose('Update left - right cycling bc')
+    for i_to_modify in i_to_modifies:
+        verbose('Updating i level: {}', i_to_modify)
+        sqltext = 'WITH gl AS (SELECT j, height, nz FROM "{0}"."{1}" WHERE i = {3}) ' \
+                  'UPDATE "{0}"."{1}" AS g SET (nz, height) =  ' \
+                  '   (gl.nz, gl.height)  ' \
+                  'FROM gl  ' \
+                  'WHERE gl.j = g.j AND i = {2}'\
+                  .format(cfg.domain.case_schema, cfg.tables.grid, i_to_modify, i_to_floor)
+        cur.execute(sqltext)
+        sql_debug(connection)
+        connection.commit()
+
 
 def prepare_domain_extends(cfg, connection, cur):
     """ Calculate origins, transform origins to latitude and longitude """
@@ -815,428 +1079,3 @@ def prepare_domain_extends(cfg, connection, cur):
     cfg.domain._settings['origin_lat'] = origin_lat
     debug('Domain origin x,y: {}, {}', origin_x, origin_y)
     debug('Domain origin lon,lat: {}, {}', origin_lon, origin_lat)
-
-def nc_write_global_attributes(ncfile, cfg):
-    debug("Writing global attributes to file...")
-    ncfile.setncattr('Conventions', "CF-1.7")
-    ncfile.setncattr("origin_x", cfg.domain.origin_x)
-    ncfile.setncattr("origin_y", cfg.domain.origin_y)
-    ncfile.setncattr("origin_z", cfg.domain.origin_z)
-    ncfile.setncattr("origin_time", cfg.origin_time)
-    ncfile.setncattr("origin_lat", cfg.domain.origin_lat)
-    ncfile.setncattr("origin_lon", cfg.domain.origin_lon)
-    ncfile.setncattr("acronym", cfg.ncprops.acronym)
-    ncfile.setncattr("author", cfg.ncprops.author)
-    ncfile.setncattr("campaign", cfg.ncprops.campaign)
-    ncfile.setncattr("contact_person", cfg.ncprops.contact_person)
-    ncfile.setncattr("creation_time", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-    ncfile.setncattr("comment", cfg.ncprops.comment)
-    ncfile.setncattr("data_content", cfg.ncprops.data_content)
-    ncfile.setncattr("dependencies", cfg.ncprops.dependencies)
-    ncfile.setncattr("institution", cfg.ncprops.institution)
-    ncfile.setncattr("keywords", cfg.ncprops.keywords)
-    ncfile.setncattr("location", cfg.ncprops.location)
-    ncfile.setncattr("palm_version", cfg.ncprops.palm_version)
-    ncfile.setncattr("references", cfg.ncprops.references)
-    ncfile.setncattr("rotation_angle", cfg.ncprops.rotation_angle)
-    ncfile.setncattr("site", cfg.ncprops.site)
-    ncfile.setncattr("source", cfg.ncprops.source)
-    ncfile.setncattr("version", cfg.ncprops.version)
-
-def nc_write_crs(ncfile, cfg, connection, cur):
-    debug("Writing crs to file...")
-    sqltext = 'select srtext from "spatial_ref_sys" where srid = Find_SRID(%s, %s, %s)'
-    cur.execute(sqltext,(cfg.domain.case_schema, cfg.tables.grid, 'geom'))
-    srtext = cur.fetchone()[0]
-    temp = ncfile.createVariable("crs", "i")
-
-    # default info
-    temp.long_name = "coordinate reference system"
-    temp.grid_mapping_name = "transverse_mercator"
-    temp.semi_major_axis = 6378137.0
-    temp.inverse_flattening = 298.257222101
-    temp.longitude_of_prime_meridian = 0.0
-    temp.longitude_of_central_meridian = 15.0
-    temp.latitude_of_projection_origin = 0.0
-    temp.scale_factor_at_central_meridian = 0.9996
-    temp.false_easting = 500000.0
-    temp.false_northing = 0.0
-    temp.units = 'm'
-    temp.epsg_code = 'EPSG: 25833'
-
-    # overwrite default info
-    temp.long_name = "coordinate reference system"
-    # PROJCS
-    proj = srtext.split(sep="PROJECTION[")[1]
-    temp.grid_mapping_name = proj.split('],')[0].strip('"')
-    # PARAMETERs
-    params = proj.split('PARAMETER[')
-    for i in range(1, len(params)):
-        param = params[i].split(']')[0].split(',')
-        if param[0].strip('"') == 'latitude_of_origin':
-            temp.latitude_of_projection_origin = float(param[1].strip('"'))
-        elif param[0].strip('"') == 'scale_factor':
-            temp.scale_factor_at_central_meridian = float(param[1].strip('"'))
-        else:
-            temp.setncattr(param[0].strip('"'), float(param[1].strip('"')))
-    # UNIT
-    temp.units = proj.split('UNIT[')[1].split('],')[0].split(',')[0].strip('"')
-    # AUTHORITY
-    auths = proj.split('AUTHORITY[')
-    auth = auths[len(auths) - 1].split(']')[0].split(',')
-    authstr = auth[0].replace('"', '') + ':' + auth[1].replace('"', '')
-    temp.epsg_code = authstr
-
-
-def nc_create_dimension(ncfile, dimname, dimlen):
-    try:
-        debug("Creating dimension {}", dimname)
-        ncfile.createDimension(dimname, dimlen)
-        return 0
-    except:
-        return 0
-
-def nc_create_variable(ncfile, var_name, precision, dims, fill_value = None ):
-    try:
-        ncfile.createVariable(var_name, precision, dims, fill_value = fill_value )
-    except:
-        pass
-    return ncfile.variables[var_name]
-
-def nc_write_attribute(ncfile, variable, attribute, value):
-    if not hasattr(ncfile[variable], attribute):
-        var = ncfile.variables[variable]
-        var.setncattr(attribute, value)
-    return 0
-
-
-def create_dim_xy(ncfile, cfg, connection, cur):
-    """ """
-    sqltext = 'select distinct xcen from "{0}"."{1}" order by xcen'.format(cfg.domain.case_schema, cfg.tables.grid)
-    cur.execute(sqltext)
-    x1d = [x[0] - cfg.domain.origin_x for x in cur.fetchall()]
-    sqltext = 'select distinct ycen from "{0}"."{1}" order by ycen'.format(cfg.domain.case_schema, cfg.tables.grid)
-    cur.execute(sqltext)
-    sql_debug(connection)
-    y1d = [y[0] - cfg.domain.origin_y for y in cur.fetchall()]
-    nxm, nym = len(x1d), len(y1d)
-
-    debug("Writing 2D variables x, y to file...")
-    nc_create_dimension(ncfile, 'x', nxm)
-    nc_create_dimension(ncfile, 'y', nym)
-    vt = 'f8'
-    temp_x = ncfile.createVariable('x', vt, 'x')
-    temp_y = ncfile.createVariable('y', vt, 'y')
-    temp_x[:] = x1d[:]
-    temp_y[:] = y1d[:]
-    del x1d, y1d
-    nc_write_attribute(ncfile, 'x', 'long_name', 'x')
-    nc_write_attribute(ncfile, 'x', 'standard_name', 'projection_x_coordinate')
-    nc_write_attribute(ncfile, 'x', 'units', 'm')
-    nc_write_attribute(ncfile, 'y', 'long_name', 'y')
-    nc_write_attribute(ncfile, 'y', 'standard_name', 'projection_y_coordinate')
-    nc_write_attribute(ncfile, 'y', 'units', 'm')
-
-    ################################
-    # transform xcen, ycen coordinates to lat,lon and E_UTM, N_UTM coordinates
-    # and store into coresponding netcdfs variables
-    debug("Writing 2D variables lon, lat, E_UTM, N_UTM to file...")
-    sqltext = 'select lon, lat, "E_UTM", "N_UTM" from "{0}"."{1}" order by j,i'.format(cfg.domain.case_schema, cfg.tables.grid)
-    cur.execute(sqltext)
-    res = cur.fetchall()
-    vt = 'f4'
-    nc_create_dimension(ncfile, 'lon', nxm)
-    var = ncfile.createVariable('lon', vt, ('y', 'x'), fill_value=cfg.fill_values[vt])
-    var[:, :] = np.reshape(np.asarray([x[0] for x in res], dtype=vt), (nym, nxm))
-    nc_create_dimension(ncfile, 'lat', nym)
-    var = ncfile.createVariable('lat', vt, ('y', 'x'), fill_value=cfg.fill_values[vt])
-    var[:, :] = np.reshape(np.asarray([x[1] for x in res], dtype=vt), (nym, nxm))
-    vt = 'f8'
-    nc_create_dimension(ncfile, 'E_UTM', nxm)
-    var = ncfile.createVariable('E_UTM', vt, ('y', 'x'), fill_value=cfg.fill_values[vt])
-    var[:, :] = np.reshape(np.asarray([x[2] for x in res], dtype=vt), (nym, nxm))
-    nc_create_dimension(ncfile, 'N_UTM', nym)
-    var = ncfile.createVariable('N_UTM', vt, ('y', 'x'), fill_value=cfg.fill_values[vt])
-    var[:, :] = np.reshape(np.asarray([x[3] for x in res], dtype=vt), (nym, nxm))
-    del res
-
-    # write needed attributes
-    nc_write_attribute(ncfile, 'lat', 'long_name', 'latitude')
-    nc_write_attribute(ncfile, 'lat', 'standard_name', 'latitude')
-    nc_write_attribute(ncfile, 'lat', 'units', 'degrees_north')
-    nc_write_attribute(ncfile, 'lon', 'long_name', 'longitude')
-    nc_write_attribute(ncfile, 'lon', 'standard_name', 'longitude')
-    nc_write_attribute(ncfile, 'lon', 'units', 'degrees_east')
-    nc_write_attribute(ncfile, 'E_UTM', 'long_name', 'easting')
-    nc_write_attribute(ncfile, 'E_UTM', 'standard_name', 'projection_x_coorindate')
-    nc_write_attribute(ncfile, 'E_UTM', 'units', 'm')
-    nc_write_attribute(ncfile, 'N_UTM', 'long_name', 'northing')
-    nc_write_attribute(ncfile, 'N_UTM', 'standard_name', 'projection_y_coorindate')
-    nc_write_attribute(ncfile, 'N_UTM', 'units', 'm')
-
-    for name in cfg.ndims._settings.keys():
-        d = cfg.ndims[name]
-        nc_create_dimension(ncfile, name, d)
-        temp = ncfile.createVariable(name, 'i', name)
-        temp[:] = np.asarray(list(range(d)))
-
-def write_terrain(ncfile, cfg, connection, cur):
-    # write topography
-    nx = cfg.domain.nx
-    ny = cfg.domain.ny
-    # artificial adjustment, according to fact that child domain and parent domain share the same origin
-    if cfg.domain.origin_z > cfg.domain.oro_min:
-        error('Origin z [{} m] is higher that oro min [{} m]', cfg.domain.origin_z, cfg.domain.oro_min)
-    nesting_adjust = ceil((cfg.domain.oro_min - cfg.domain.origin_z) / cfg.domain.dz)
-
-    sqltext = 'select (nz+{3})*{2} from "{0}"."{1}" order by j,i'.format(
-              cfg.domain.case_schema, cfg.tables.grid, cfg.domain.dz, nesting_adjust)
-    cur.execute(sqltext)
-    res = cur.fetchall()
-    sql_debug(connection)
-    vn = 'zt'
-    vt = 'f4'
-    var = ncfile.createVariable(vn, vt, ('y', 'x'), fill_value=cfg.fill_values[vt])
-    var[:, :] = np.reshape(np.asarray([x[0] for x in res], dtype=vt), (ny, nx))
-    del res
-    if cfg.visual_check.enabled:
-        variable_visualization(var=var,
-                               x=np.asarray(ncfile.variables['x']), y=np.asarray(ncfile.variables['y']),
-                               var_name=vn, par_id='', text_id='terrain_height', path=cfg.visual_check.path,
-                                   show_plots=cfg.visual_check.show_plots)
-
-
-def write_type_variable(ncfile, cfg, vn, vln, vt, fill, lod, connection, cur):
-    res = cur.fetchall()
-    sql_debug(connection)
-    ncfile.createVariable(vn, vt, ('y', 'x'), fill_value=fill[vt])
-    res = [fill[vt] if x[0] is None else x[0] for x in res]
-    var = np.reshape(np.asarray([x for x in res], dtype=vt), (cfg.domain.ny, cfg.domain.nx))
-    del res
-    var = np.nan_to_num(var, copy=False, nan=fill[vt], posinf=fill[vt], neginf=fill[vt])
-    ncfile[vn][...] = var
-    nc_write_attribute(ncfile, vn, 'long_name', vln)
-    nc_write_attribute(ncfile, vn, 'units', '')
-    nc_write_attribute(ncfile, vn, 'res_orig', cfg.domain.dz)
-    if lod is not None and lod != '' and lod != 0:
-        nc_write_attribute(ncfile, vn, 'lod', lod)
-    nc_write_attribute(ncfile, vn, 'coordinates', 'E_UTM N_UTM lon lat')
-    nc_write_attribute(ncfile, vn, 'grid_mapping', 'E_UTM N_UTM lon lat')
-    debug('Variable {} ({}) has been written.', vn, vln)
-
-def write_pavements(ncfile, cfg, connection, cur):
-    # write landcover
-    vn = 'pavement_type'
-    vt = 'b'
-    sqltext = 'select l.type-%s from "{0}"."{1}" g ' \
-              'left outer join "{0}"."{2}" l on l.lid = g.lid and l.type >= %s and l.type < %s ' \
-              'order by g.j, g.i' \
-        .format(cfg.domain.case_schema, cfg.tables.grid, cfg.tables.landcover)
-    cur.execute(sqltext, (cfg.type_range.pavement_min, cfg.type_range.pavement_min, cfg.type_range.pavement_max,))
-    sql_debug(connection)
-    write_type_variable(ncfile, cfg, vn, 'pavement type', vt, cfg.fill_values, 0, connection, cur)
-
-    if cfg.visual_check.enabled:
-        variable_visualization(var=ncfile[vn],
-                               x=np.asarray(ncfile.variables['x']), y=np.asarray(ncfile.variables['y']),
-                               var_name=vn, par_id='', text_id='pavement_type', path=cfg.visual_check.path,
-                               show_plots=cfg.visual_check.show_plots)
-
-def write_water(ncfile, cfg, connection, cur):
-    # write water surfaces
-    vn = "water_type"
-    vt = 'b'
-    sqltext = 'select l.type-%s from "{0}"."{1}" g left outer join "{0}"."{2}" l ' \
-              ' on l.lid = g.lid and l.type >= %s and l.type < %s order by g.j, g.i' \
-        .format(cfg.domain.case_schema, cfg.tables.grid, cfg.tables.landcover)
-    cur.execute(sqltext, (cfg.type_range.water_min, cfg.type_range.water_min,
-                          cfg.type_range.water_max,))
-    sql_debug(connection)
-    write_type_variable(ncfile, cfg, vn, 'water type', vt, cfg.fill_values, 0, connection, cur)
-    if cfg.visual_check.enabled:
-        variable_visualization(var=ncfile[vn],
-                               x=np.asarray(ncfile.variables['x']), y=np.asarray(ncfile.variables['y']),
-                               var_name=vn, par_id='', text_id='water_type', path=cfg.visual_check.path,
-                               show_plots = cfg.visual_check.show_plots)
-
-    # process water pars - water body temperature
-    vn = "water_pars"
-    vt = 'f4'
-    ncfile.createVariable(vn, vt, ('nwater_pars', 'y', 'x'), fill_value=cfg.fill_values[vt])
-    nc_write_attribute(ncfile, vn, 'long_name', 'water parameters')
-    nc_write_attribute(ncfile, vn, 'units', '1')
-    nc_write_attribute(ncfile, vn, 'source', '')
-    nc_write_attribute(ncfile, vn, 'res_orig', cfg.domain.dz)
-    nc_write_attribute(ncfile, vn, 'coordinates', 'E_UTM N_UTM lon lat')
-    nc_write_attribute(ncfile, vn, 'grid_mapping', 'E_UTM N_UTM lon lat')
-
-    # specific treatment of water body
-    sqltext = 'CASE  '
-    for wtype, wtemp in cfg.water_pars_temp._settings.items():
-        sqltext += 'WHEN type = {0} THEN {1} '.format(wtype + cfg.type_range.water_min, wtemp)
-    sqltext += 'ELSE NULL END'
-
-    sqltext = 'SELECT {0} ' \
-              'FROM "{1}"."{2}" AS g ' \
-              'LEFT OUTER JOIN "{1}"."{3}" AS l ON l.lid = g.lid AND l.type >= %s AND l.type < %s ' \
-              'ORDER BY g.j, g.i' \
-        .format(sqltext, cfg.domain.case_schema, cfg.tables.grid,
-                cfg.tables.landcover, )
-    cur.execute(sqltext, (cfg.type_range.water_min, cfg.type_range.water_max,))
-    res = cur.fetchall()
-    sql_debug(connection)
-    res = [cfg.fill_values[vt] if x[0] is None else x[0] for x in res]
-    var = np.reshape(np.asarray(res, dtype=vt), (cfg.domain.ny, cfg.domain.nx))
-    del res
-    var = np.nan_to_num(var, copy=False, nan=cfg.fill_values[vt],
-                        posinf=cfg.fill_values[vt], neginf=cfg.fill_values[vt])
-    ncfile.variables[vn][0, ...] = var
-    debug('Variable {}, parameter {} written.', vn, 0)
-
-    if cfg.visual_check.enabled:
-        variable_visualization(var=ncfile.variables[vn][0, ...],
-                               x=np.asarray(ncfile.variables['x']), y=np.asarray(ncfile.variables['y']),
-                               var_name=vn, par_id=0, text_id='water_pars', path=cfg.visual_check.path,
-                               show_plots = cfg.visual_check.show_plots)
-
-def write_vegetation(ncfile, cfg, connection, cur):
-    # write vegetation surfaces
-    vn = "vegetation_type"
-    vt = 'b'
-    sqltext = 'select l.type-%s from "{0}"."{1}" g left outer join "{0}"."{2}" l ' \
-              ' on l.lid = g.lid and l.type >= %s and l.type < %s order by g.j, g.i' \
-        .format(cfg.domain.case_schema, cfg.tables.grid, cfg.tables.landcover)
-    cur.execute(sqltext, (cfg.type_range.vegetation_min, cfg.type_range.vegetation_min, cfg.type_range.vegetation_max,))
-    sql_debug(connection)
-    write_type_variable(ncfile, cfg, vn, 'vegetation type', vt, cfg.fill_values, 0, connection, cur)
-    if cfg.visual_check.enabled:
-        variable_visualization(var=ncfile[vn],
-                               x=np.asarray(ncfile.variables['x']), y=np.asarray(ncfile.variables['y']),
-                               var_name=vn, par_id='', text_id='vegetation_type', path=cfg.visual_check.path,
-                               show_plots = cfg.visual_check.show_plots)
-
-def write_soil(ncfile, cfg, connection, cur):
-    # write soil type for vegetation surfaces
-    # TODO: used one default type of the soil so far - get specific soil type for landcover database !!!
-    vn = "soil_type"
-    vt = 'b'
-    sqltext = 'select case when l.type is not null then %s else null end ' \
-              'from "{0}"."{1}" g left outer join "{0}"."{2}" l ' \
-              ' on l.lid = g.lid and ((l.type >= %s and l.type < %s) or (l.type >= %s and l.type < %s)) ' \
-              'order by g.j, g.i' \
-        .format(cfg.domain.case_schema, cfg.tables.grid, cfg.tables.landcover)
-    cur.execute(sqltext, (cfg.ground.soil_type_default, cfg.type_range.vegetation_min, cfg.type_range.vegetation_max,
-                          cfg.type_range.pavement_min, cfg.type_range.pavement_max,))
-    sql_debug(connection)
-    write_type_variable(ncfile, cfg, vn, 'soil type', vt, cfg.fill_values, 1, connection, cur)
-    if cfg.visual_check.enabled:
-        variable_visualization(var=ncfile[vn],
-                               x=np.asarray(ncfile.variables['x']), y=np.asarray(ncfile.variables['y']),
-                               var_name=vn, par_id='', text_id='soil_type', path=cfg.visual_check.path,
-                               show_plots = cfg.visual_check.show_plots)
-
-def write_buildings(ncfile, cfg, connection, cur):
-    # write building_height (buildings_2d), building_id and building_type into netcdf file
-    # building id
-    sqltext = 'select b.lid from "{0}"."{1}" g ' \
-              'left outer join "{0}"."{2}" b on b.id = g.id order by g.j, g.i' \
-        .format(cfg.domain.case_schema, cfg.tables.grid, cfg.tables.buildings_grid)
-    cur.execute(sqltext)
-    sql_debug(connection)
-    vn = 'building_id'
-    vt = 'i'
-    write_type_variable(ncfile, cfg, vn, vn, vt, cfg.fill_values, 0, connection, cur)
-    if cfg.visual_check.enabled:
-        variable_visualization(var=ncfile[vn],
-                               x=np.asarray(ncfile.variables['x']), y=np.asarray(ncfile.variables['y']),
-                               var_name=vn, par_id='', text_id='building_id', path=cfg.visual_check.path,
-                               show_plots = cfg.visual_check.show_plots)
-
-    # building height
-    sqltext = 'select b.nz*{3} from "{0}"."{1}" g ' \
-              'left outer join "{0}"."{2}" b on b.id = g.id order by g.j, g.i' \
-        .format(cfg.domain.case_schema, cfg.tables.grid, cfg.tables.buildings_grid, cfg.domain.dz)
-    cur.execute(sqltext)
-    sql_debug(connection)
-    vn = 'buildings_2d'
-    vt = 'f4'
-    write_type_variable(ncfile, cfg, vn, vn, vt, cfg.fill_values, 1, connection, cur)
-    if cfg.visual_check.enabled:
-        variable_visualization(var=ncfile[vn],
-                               x=np.asarray(ncfile.variables['x']), y=np.asarray(ncfile.variables['y']),
-                               var_name=vn, par_id='', text_id='building_2d', path=cfg.visual_check.path,
-                               show_plots = cfg.visual_check.show_plots)
-
-    # building_type
-    sqltext = 'select case when b.id is not null then ' \
-              ' case when l.type >= %s and l.type < %s then l.type-%s ' \
-              ' else 1 end else null end as type ' \
-              'from "{0}"."{1}" g ' \
-              'left outer join "{0}"."{2}" b on b.id = g.id ' \
-              'left outer join "{0}"."{3}" l on l.lid = g.lid ' \
-              'order by g.j, g.i ' \
-        .format(cfg.domain.case_schema, cfg.tables.grid, cfg.tables.buildings_grid, cfg.tables.landcover)
-    cur.execute(sqltext, (cfg.type_range.building_min, cfg.type_range.building_max, cfg.type_range.building_min,))
-    sql_debug(connection)
-    vn = 'building_type'
-    vt = 'b'
-    write_type_variable(ncfile, cfg, vn, vn, vt, cfg.fill_values, 0, connection, cur)
-    if cfg.visual_check.enabled:
-        variable_visualization(var=ncfile[vn],
-                               x=np.asarray(ncfile.variables['x']), y=np.asarray(ncfile.variables['y']),
-                               var_name=vn, par_id='', text_id='building_type', path=cfg.visual_check.path,
-                               show_plots = cfg.visual_check.show_plots)
-
-def variable_visualization(var, x, y, var_name, par_id, text_id, path, scale=15, color_name='gist_rainbow', show_plots=False): #hsv
-    """ create 2d plot from var 2d matrix"""
-    # TODO: add posibility to directly add X, Y = lat, lon
-    if not show_plots:
-        plt.ioff()
-    ny, nx = var.shape
-    fig = plt.figure()
-    ax = plt.subplot(111)
-    X, Y = np.meshgrid(x, y)
-
-    ax_sl = ax.imshow(var, aspect='equal', cmap=plt.get_cmap(color_name), origin='lower',
-                      )
-    fig.colorbar(ax_sl, extend='max', orientation = 'horizontal')
-
-    plt.title('{}: {}\n'
-              '[{}], '
-              'min: {:.2f}, max: {:.2f}, avg: {:.2f}, stdev: {:.2f}'.format(
-                var_name, par_id, text_id,
-                np.min(var), np.max(var), np.average(var), np.std(var)))
-
-    fig.savefig(os.path.join(path,'{}_{}.png'.format(var_name, par_id)),
-                dpi=400)
-    debug('{}: {} was successfully plotted', var_name, par_id)
-
-def check_consistency(ncfile, cfg):
-    """ Check whether there are no grid points without any type """
-    change_log_level(cfg.logs.level_check_consistency)
-    progress('Checking consistency ...')
-    pavement_type_default = 2
-    mask = (ncfile.variables['vegetation_type'][:,:].mask & ncfile.variables['pavement_type'][:,:].mask & \
-            ncfile.variables['building_type'][:,:].mask & ncfile.variables['water_type'][:,:].mask )
-    missing_values = np.sum(mask)
-    if missing_values > 0:
-        warning('There are {} missing values that were filled with default pavement type {}',
-                missing_values, pavement_type_default)
-        extra_verbose('Missing grid: {}', np.where(mask))
-
-    pt = ncfile.variables['pavement_type'][:, :]
-    pt = np.where(mask, pavement_type_default, pt)
-    ncfile.variables['pavement_type'][:, :] = pt
-
-    # soil type
-    soil_type_default = 3
-    mask = np.logical_and(np.logical_or(~ncfile.variables['vegetation_type'][:,:].mask, ~ncfile.variables['pavement_type'][:,:].mask),
-                                         ncfile.variables['soil_type'][:,:].mask)
-    missing_soils = np.sum(mask)
-    if missing_soils > 0:
-        warning('There are {} missing soil values that were filled with default soil type {}',
-             missing_soils, soil_type_default)
-        extra_verbose('Missing grids: {}', np.where(mask))
-    pt = ncfile.variables['soil_type'][:, :]
-    pt[mask] = soil_type_default
-    ncfile.variables['soil_type'][:, :] = pt

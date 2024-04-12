@@ -1,0 +1,13 @@
+srid_input: 32633
+srid_palm: 32633
+srid: 32633
+
+domain:
+    name: 'inputs_brno'
+    scenario: ''
+    xl: 612999
+    xh: 621437
+    yl: 5446031
+    yh: 5454982
+    crop_domain: True
+    fill_boundary: False
