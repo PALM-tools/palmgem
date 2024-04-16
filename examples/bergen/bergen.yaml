@@ -1,0 +1,15 @@
+srid_input: 32632
+srid_palm: 32632
+srid: 32632
+
+domain:
+    name: 'inputs_bergen'
+    scenario: ''
+    xl: 294476
+    xh: 300575
+    yl: 6695582
+    yh: 6702858
+    crop_domain: True
+    fill_boundary: True
+    
+mt_default: 301

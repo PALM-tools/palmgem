@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 import psycopg2
 from utils.palm_static_pg_lib import *
+from utils.consistency_checks import *
 from config.config import load_config, cfg
 from argparse import ArgumentParser
 import getpass
@@ -19,12 +20,10 @@ progress('Reading configuration')
 argp = ArgumentParser(description=__doc__)
 argp.add_argument('-c', '--config', help='configuration file')
 
-
 # load config file
 argv = argp.parse_args()
 load_config(argv)
 logging_level(cfg)
-
 
 debug('Config file: {}', argv.config)
 debug('Domain: {}', cfg.domain.name)
@@ -82,6 +81,7 @@ vtabs = copy_vectors_from_input(grid_ext, cfg, connection, cur)
 progress('Coping and transforming data from inputs, raster data')
 rtabs = copy_rasters_from_input(grid_ext, cfg, connection, cur)
 
+check_buildings(cfg, connection, cur, rtabs, grid_ext)
 progress('Calculate terrain height in grid')
 calculate_terrain_height(cfg, connection, cur)
 
@@ -91,11 +91,18 @@ calculate_origin_z_oro_min(cfg, connection, cur)
 progress('Connect landcover to grid')
 connect_landcover_grid(cfg, connection, cur)
 
+progress('Fill cortyards smaller than {} grid cells', cfg.cortyard_fill.count)
+if cfg.cortyard_fill.apply:
+    fill_cortyard(cfg, connection, cur)
+
 progress('Filling missing building holes')
 fill_missing_holes_in_grid(cfg, connection, cur)
 
 progress('Processing building elevation model BEM')
 connect_buildings_height(cfg, connection, cur)
+
+if cfg.force_cyclic:
+    update_force_cyclic(cfg, connection, cur)
 
 progress('Done with preparation of geo inputs')
 progress('Process data into netCDF4 static driver according to PALM Input Data Standard')

@@ -40,11 +40,29 @@ origin_time: '1970-01-01 00:00:00'
 # maximal distance for looking of neighbour building heights
 maxbuildingdisance: 5
 
+cortyard_fill:
+    apply: False
+    count: 30
+    
+topo_fill_v2:
+    apply: False
+    count: 9
+    
+force_lsm_only: False
+force_cyclic: False
+force_cyclic_nc: 4
+force_building_boundary: True
+force_building_boundary_dist: 3 # distance in grid points, real distance =* dx
+
+# compression of the output netcdf file
+zlib: False
+complevel: 4
 # global attributes of the static driver netcdf file
 # fill values
 fill_values:
     b: -127
     i: -9999
+    i4: -9999
     f4: -9999.0
     f8: -9999.0
 

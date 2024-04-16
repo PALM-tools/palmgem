@@ -1,0 +1,17 @@
+input_schema: 'inputs_bergen'
+srid_input: 32632
+srid_palm: 32632
+
+domain:
+    name: 'bergen'
+    scenario: ''
+    parent_domain_schema: ''
+    dx: 10.0
+    dy: 10.0
+    dz: 10.0
+    nx: 256
+    ny: 256
+    cent_x: 298256.102
+    cent_y: 6698676.253
+
+origin_time: '2019-07-27 00:00:00'

@@ -38,11 +38,11 @@ declare
 	max_count integer;
 begin
     ret = false;
-    sqltext = format('ALTER TABLE %I.%I DROP CONSTRAINT landcover_pkey',case_schema, landcover_table);
+    sqltext = format('ALTER TABLE %I.%I DROP CONSTRAINT IF EXISTS landcover_pkey',case_schema, landcover_table);
     execute(sqltext);
     sqltext = format('ALTER TABLE %I.%I ADD PRIMARY KEY (lid)',case_schema, landcover_table);
     execute(sqltext);
-    sqltext = format('ALTER TABLE %I.%I DROP CONSTRAINT grid_pkey',case_schema, grid_table);
+    sqltext = format('ALTER TABLE %I.%I DROP CONSTRAINT IF EXISTS grid_pkey',case_schema, grid_table);
     execute(sqltext);
     sqltext = format('ALTER TABLE %I.%I ADD PRIMARY KEY (i,j,lid)',case_schema, grid_table);
     execute(sqltext);

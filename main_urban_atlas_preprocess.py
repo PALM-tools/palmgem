@@ -185,7 +185,6 @@ if cfg.clean_up:
     sql_debug(connection)
     connection.commit()
 
-
 """ ORIGINAL LANDCOVER """
 progress('Processing Landcover')
 # verbose('Adding geometry index to landcover table')

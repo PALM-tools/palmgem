@@ -1,0 +1,20 @@
+input_schema: 'inputs_prague'
+srid_input: 32633
+srid_palm: 32633
+
+domain:
+    name: 'prague'
+    scenario: ''
+    parent_domain_schema: ''
+    dx: 10.0
+    dy: 10.0
+    dz: 10.0
+    nx: 64
+    ny: 64
+    cent_x: 460338.0
+    cent_y: 5539561.0
+
+origin_time: '2019-07-27 00:00:00'
+
+logs:
+    level: 1

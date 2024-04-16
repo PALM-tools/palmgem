@@ -1,0 +1,20 @@
+input_schema: 'inputs_brno'
+srid_input: 32633
+srid_palm: 32633
+
+domain:
+    name: 'brno'
+    scenario: ''
+    parent_domain_schema: ''
+    dx: 10.0
+    dy: 10.0
+    dz: 10.0
+    nx: 256
+    ny: 256
+    cent_x: 617146.0
+    cent_y: 5450281.0
+
+origin_time: '2019-07-27 00:00:00'
+
+logs:
+    level: 1
