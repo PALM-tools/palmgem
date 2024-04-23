@@ -1,3 +1,7 @@
 # Run PALM Static Driver Preprocessor
 ## Configuration and running PALM preprocessor
-Before running very first case, upload all .sql function from utils folder into Postgresql server, see [instalation of PostgreSQL](install.md). Create configuration file name_of_case.yaml in config folder. See example_palm.yaml. Specify connection to database, name of case, name of scenarion, domain definitions (center, resolution, extension, ...), complete configuration. Run PALM static driver with configuration python3 main_palm_static.py -c brno_palm.yaml. In logs see progress and in visual_check folder see output png figures. Or use QGIS to visualized PALM grid with properties, detailed instruction can be found [here](../../docs/visuallization.md).
+Before running very first case, upload all .sql function from utils folder into Postgresql server, see [instalation of PostgreSQL](install.md). Create configuration file name_of_case.yaml in config folder. See example_palm.yaml. Specify connection to database, name of case, name of scenarion, domain definitions (center, resolution, extension, ...), complete configuration. Run PALM static driver with configuration:
+```
+python3 main_palm_static.py -c configuration_file.yaml. 
+```
+In logs see progress and in visual_check folder see outputed png figures. Or use QGIS to visualized PALM grid with properties, detailed instruction can be found [here](../../docs/visuallization.md).

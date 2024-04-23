@@ -667,9 +667,9 @@ def fill_topo_v2(cfg, connection, cur):
     debug('Create nz_temp')
     sqltext = 'CREATE TABLE "{2}"."nz_temp" AS ' \
               'SELECT g.id, g.i AS i, g.j AS j, g.geom AS geom,  ' \
-              'CASE WHEN b.height IS NOT NULL AND NOT b.is_bridge THEN b.nz+bo.max_int' \
+              'CASE WHEN b.height IS NOT NULL THEN b.nz+bo.max_int' \
               '     ELSE g.nz END AS nz, ' \
-              'CASE WHEN b.height IS NOT NULL AND NOT b.is_bridge THEN true ' \
+              'CASE WHEN b.height IS NOT NULL THEN true ' \
               '     ELSE false END AS is_building ' \
               'FROM "{2}"."{3}" AS g ' \
               'LEFT OUTER JOIN "{2}"."{4}" AS b ON g.id=b.id  ' \
@@ -798,8 +798,7 @@ def fill_topo_v2(cfg, connection, cur):
               '   FROM "{0}"."nz_temp" AS nt ' \
               '   LEFT OUTER JOIN "{0}"."{3}"  AS bo ON b.lid = bo.lid' \
               '   WHERE nt.is_building AND b.id = nt.id) ' \
-              ' WHERE NOT b.is_bridge'.format(
-                cfg.domain.case_schema, cfg.tables.buildings_grid, cfg.domain.oro_min, cfg.tables.buildings_offset)
+              .format(cfg.domain.case_schema, cfg.tables.buildings_grid, cfg.domain.oro_min, cfg.tables.buildings_offset)
     cur.execute(sqltext)
 
     sql_debug(connection)
