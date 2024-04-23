@@ -16,4 +16,8 @@ From UA website https://land.copernicus.eu/local/urban-atlas/building-height-201
 Use prepared shell script in import_to_sql folder import_pgsql.sh to import downloaded data into postgresql database (please check names and paths of the importing files). After successful import you can check imported geodata using QGIS, detailed instruction can be found [here](../../docs/visuallization.md).
 
 ## Configuration and running preprocessor
-Check default configurations in config folder. Create you configuration in config folder, name_of_case.yaml. Fill in your PostgreSQL database connection, you connection username and password, name of input schema. Specify if you want to crop to user defined extend (see example_preproc.yaml). Then run preprocessing python script **python3 main_urban_atlas_preprocess.py -c path2config.yaml &**. See log in logs, the name of log is name+scenario.log. You can visualize processed tables using QGIS, detailed instruction can be found [here](../../docs/visuallization.md).
+Check default configurations in config folder. Create you configuration in config folder, name_of_case.yaml. Fill in your PostgreSQL database connection, you connection username and password, name of input schema. Specify if you want to crop to user defined extend (see example_preproc.yaml). Then run preprocessing python script 
+```
+python3 main_urban_atlas_preprocess.py -c path2config.yaml &**. 
+```
+See log in logs, the name of log is name+scenario.log. You can visualize processed tables using QGIS, detailed instruction can be found [here](../../docs/visuallization.md).

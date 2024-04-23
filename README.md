@@ -1,29 +1,22 @@
-PALM-GeM: Geospatial Data Merging and preprocessing into PALM
+PALM-GeM
 =============================================================
+**PALM-GeM** (Geospatial Data Merging and preprocessing into PALM) is an advance tool for PALM's *static driver* preparation. PALM-GeM is developed to work effectively with publicly available dataset in standard GIS format. The enables to prepare a *static driver* for most larger european cities in spatial resolution 5-10m. Current data sources are UrbanAtlas, OpenStreepMap, EU-DEM
 
-## General TODO:
-* finish documentation
-* Add filtration routines
-* Merge with codes from our palm_inputs
-* Merge slanted faces (in production branch, with own docs, config in branch, will be merged latter)
-* test that all works fine
-* finish usercases - bergen/brno/prague
-* In user cases add some shell script that would copy example configs into config, import to import etc, so the folders are not messy
-* push to gitlab, send note to gitlab
-* finish manuscript
-
-A versatile tool for processing geospatial data from various origins and
-preparing static drivers for the PALM modelling system.
+## Functionality
+The workflow of *static driver* preparation:
+- **Location definition**: definition of simulation domain. Checking data availability for selected region/city. 
+- **Dataset downloading**: download of necessary dataset.
+- **Domain definition for inputs**: definition of domain extend for general inputs domain schema.
+- **Inputs data preparation**: Geographic conversion to unified targed Geographic coordinate reference system (EPSG, SRID)
+- **PALM static driver domain definition & preparation**: Detailed definition of target PALM's *static driver* domain. Domain center, extend, resolution, ...
 
 ## Opensource PALM Static Driver preprocessor
 Short paragraph about tool
 * All mayor cities in Europe are there
 * Note about how user can prepare static driver for every bigger european city and with other PALM tools (WRF interface, PROMET, PALM itself) can run PALM simulation with reasonable good resolution.
 
-## Installation / Requirements
+## Installation
 Detailed installation can be found here: [Installation](docs/install.md)
-TODO: Jarda please write installation and requirements for PostgreSQL a PostGIS.\
-TODO: python version + version of libraries
 
 ## Documentation
 General description of used modules, function etc.. [docs](docs/general.md) \
@@ -41,8 +34,10 @@ Current version developed to process open-source datase (UrbanAtlas, OpenStreetM
 
 ## Example
 We have prepared several example testcases \
+[Berlin testcase](examples/berlin/README.md) \
+[Prague testcase](examples/prague/README.md) \
 [Brno testcase](examples/brno/README.md) \
-[Tromso testcase](examples/tromso/README.md)
+[Bergen testcase](examples/bergen/README.md)
 
 ## Benchmark
 | Domain | Size [km x km] | Grid size | Time [h] |
@@ -70,10 +65,12 @@ We have prepared several example testcases \
 ## Example static driver
 
 ## Project status & Future versions
-Currently, we are able to produce PALM's static driver for most of the bigger cities in EU. We have developed (in testing branch: ....) an extension for cut cell topography (link to PALM CCT or article). The cut cell tool is under development, but the version is working in most cases. There is an extension under development that would process finer geospatial datasets into PALM finer parametrization (vegetation pars, building pars, building surface pars, etc.). This extension would also process individual trees location into LAD (leaf area density) variable. Examples of this extensions can be found: cite our work. The extension will be soon part of main branch in PALM-GEM.
+Currently, we are able to produce PALM's static driver for most of the larger cities in EU. We have developed (in testing branch: cut-cell-topo) an extension for cut cell topography (link to PALM CCT or article). The cut cell tool is under development, but the version is working in most cases. There is an extension under development that would process finer geospatial datasets into PALM finer parametrization (vegetation pars, building pars, building surface pars, etc.). This extension would also process individual trees location into LAD (leaf area density) variable. Examples of this extensions can be found: cite our work. The extension will be soon part of main branch in PALM-GEM.
 
 ## License
-
+PALM-GeM is distributed under the GNU GPL v3+ license (see the `LICENSE` file).
+It was created by the Institute of Computer Science of the Czech Academy of
+Sciences (ICS CAS).
 
 ## Authors
 List of authors with contacts.

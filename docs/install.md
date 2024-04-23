@@ -40,5 +40,13 @@ _psql -h hostname -p port -U username [-W] -d dbname -f create_database.sql_
 
 
 # Python libraries
+PALM-GeM may be used out-of-the box with the project directory as long as the all
+required libraries are available. The easiest way to install them is using
 
-How to install all python libraries and version. Different machines.
+```
+pip3 install -r requirements.txt
+```
+
+however if you prefer slightly different versions of the libraries specified in
+`requirements.txt`, potentially from your operating system's distribution, you
+may try them as well.
