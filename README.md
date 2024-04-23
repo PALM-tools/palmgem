@@ -63,6 +63,12 @@ We have prepared several example testcases \
 | Berlin | 4.000 x 4.000 | 800 x 800 | 67 [min] |
 
 ## Example static driver
+|                                                       |                  Grid cell type                  |                 Terrain height                  |                 Buiding height                 |
+|:-----------------------------------------------------:|:------------------------------------------------:|:-----------------------------------------------:|:----------------------------------------------:|
+|     Berlin <br> 4000 x 4000 m <br> 5m resolution      |    ![Berlin](./docs/figures/FigXX_Berlin.png)    | ![Berlin](./docs/figures/FigXX_Berlin_DEM.png)  | ![Berlin](./docs/figures/FigXX_Berlin_BH.png)  |
+|     Prague <br> 2560 x 2560 m <br> 10m resolution     |    ![Prague](./docs/figures/FigXX_Praha.png)     |  ![Prague](./docs/figures/FigXX_Praha_DEM.png)  |  ![Prague](./docs/figures/FigXX_Praha_BH.png)  |
+|      Brno <br> 5120 x 5120 m <br> 10m resolution      |      ![Brno](./docs/figures/FigXX_Brno.png)      |   ![Brno](./docs/figures/FigXX_Brno_DEM.png)    |   ![Brno](./docs/figures/FigXX_Brno_BH.png)    |
+|   Bergen <br> 10 240 x 10 240 m <br> 10m resolution   |    ![Bergen](./docs/figures/FigXX_Bergen.png)    | ![Bergen](./docs/figures/FigXX_Bergen_DEM.png)  |                       .                        |
 
 ## Project status & Future versions
 Currently, we are able to produce PALM's static driver for most of the larger cities in EU. We have developed (in testing branch: cut-cell-topo) an extension for cut cell topography (link to PALM CCT or article). The cut cell tool is under development, but the version is working in most cases. There is an extension under development that would process finer geospatial datasets into PALM finer parametrization (vegetation pars, building pars, building surface pars, etc.). This extension would also process individual trees location into LAD (leaf area density) variable. Examples of this extensions can be found: cite our work. The extension will be soon part of main branch in PALM-GEM.
