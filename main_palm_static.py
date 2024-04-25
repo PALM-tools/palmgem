@@ -1,5 +1,23 @@
-#!/usr/bin/python3B308
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+
+# Copyright 2018-2024 Institute of Computer Science of the Czech Academy of
+# Sciences, Prague, Czech Republic. Authors: Martin Bures, Jaroslav Resler.
+#
+# This file is part of PALM-GeM.
+#
+# PALM-GeM is free software: you can redistribute it and/or modify it under the
+# terms of the GNU General Public License as published by the Free Software
+# Foundation, either version 3 of the License, or (at your option) any later
+# version.
+#
+# PALM-GeM is distributed in the hope that it will be useful, but WITHOUT ANY
+# WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR
+# A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License along with
+# PALM-GeM. If not, see <https://www.gnu.org/licenses/>.
+
 import psycopg2
 from utils.palm_static_pg_lib import *
 from utils.palm_static_pg_lib_cct import *
@@ -8,14 +26,6 @@ from config.config import load_config, cfg
 from argparse import ArgumentParser
 import getpass
 from config.logger import *
-
-########################################
-#
-# Authors: Martin Bures + Jaroslav Resler
-#
-# Institute of Computer Science, Prague
-#
-########################################
 
 progress('Reading configuration')
 argp = ArgumentParser(description=__doc__)
