@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 import psycopg2
 from utils.palm_static_pg_lib import *
+from utils.palm_static_pg_lib_cct import *
 from utils.consistency_checks import *
 from config.config import load_config, cfg
 from argparse import ArgumentParser
@@ -82,6 +83,11 @@ progress('Coping and transforming data from inputs, raster data')
 rtabs = copy_rasters_from_input(grid_ext, cfg, connection, cur)
 
 check_buildings(cfg, connection, cur, rtabs, grid_ext)
+
+if cfg.do_cct and cfg.tables.buildings_height in rtabs: # and not cfg.slanted_pars.create_slanted_mask:
+    debug('Cut cell topo, Modifying landcover, simplified buildings')
+    preprocess_building_landcover(cfg, connection, cur)
+
 progress('Calculate terrain height in grid')
 calculate_terrain_height(cfg, connection, cur)
 
@@ -139,6 +145,12 @@ write_soil(ncfile, cfg, connection, cur)
 
 progress('Writing terrain type')
 write_buildings(ncfile, cfg, connection, cur)
+
+if cfg.do_cct:
+    slanted_surface_init(cfg, connection, cur)
+    slanted_write_nc(ncfile, cfg, connection, cur)
+    check_cct_consistency(ncfile, cfg, connection, cur)
+    cct_continuity_check(ncfile, cfg)
 
 progress('Check consistency of static driver file')
 check_consistency(ncfile, cfg)
