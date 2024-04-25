@@ -30,16 +30,55 @@ tables:
     buildings_height:       'buildings'   # copied DEM from INPUTS
     buildings_grid:         'buildings_grid' # for top 2d and 3d, gridded table
     landcover:              'landcover'
+    walls:                  'walls'
+    roofs:                  'roofs'
     buildings_offset:       'buildings_offset'
+    aspect:                 'buildings_aspect_deg'
+    slope:                  'buildings_slope_deg'
+    slanted_wall:           'slanted_wall'
+    slanted_roof:           'slanted_roof'
+    slanted_terr_wall:      'slanted_terr_wall'
+    slanted_terrain:        'slanted_terrain'
+    slanted_wall_gridded_temp: 'slanted_wall_gridded_temp'
+    slanted_wall_gridded:   'slanted_wall_gridded'
+    slanted_roof_gridded_temp: 'slanted_roof_gridded_temp'
+    slanted_roof_gridded:   'slanted_roof_gridded'
+    slanted_terrain_gridded_temp: 'slanted_terrain_gridded_temp'
+    slanted_terrain_gridded: 'slanted_terrain_gridded'
+    walls_outer:            'walls_outer'
+    slanted_faces:          'slanted_faces'
+    vertices:               'vertices'
+    land_build:             'landcover_buildings'
+    build_new:              'buildings_new'
+    height_corrected:       'building_height_correct'
+    height_terr_corrected:  'terrain_height_correct'
+    slanted_wall_points:    'slanted_wall_points'
     
 idx:
-    landcover:              'lid'
+    landcover: 'lid'
+    walls:     'wid'
+    roofs:     'rid'
 
 origin_time: '1970-01-01 00:00:00'
 
 # maximal distance for looking of neighbour building heights
 maxbuildingdisance: 5
 
+# slanted surfaces
+do_cct: False
+slanted_pars:
+    max_dist: 2.0
+    simplify_dist: 3.0
+    min_seg: 2.0
+    do_vtk: True
+    clean_up: True
+    empty_vert: -1
+    off_dist: 4    # grid points, limit search of nearest gridpoint for slanted face
+    dist2edge: 3.0
+    roofs_dist2edge: 2.0
+    dist2edge_filter: 0.6
+    wall_build_height_max_dist: 2.0
+    
 cortyard_fill:
     apply: False
     count: 30
@@ -57,6 +96,7 @@ force_building_boundary_dist: 3 # distance in grid points, real distance =* dx
 # compression of the output netcdf file
 zlib: False
 complevel: 4
+
 # global attributes of the static driver netcdf file
 # fill values
 fill_values:
@@ -88,7 +128,11 @@ ncprops:
 # needed for creation of static driver according to PID specification
 ndims:
     nwater_pars: 7                 # number of elements in water_pars
-    
+    cct_max_num_vertices_per_face: 7 # number of vertices in slanted polygons
+    dim_3d: 3
+    cct_dim_vertex_coords: 4
+    cct_dim_vertex_shifts: 1
+
 ground:
     soil_type_default: 3   # default soil type medium-fine in terms of porosity
 

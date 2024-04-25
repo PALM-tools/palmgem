@@ -1025,6 +1025,16 @@ def connect_buildings_height(cfg, connection, cur):
         filled_grids = filling_grid(cfg, connection, cur)
         all_filled.append(filled_grids)
 
+    if cfg.do_cct:
+        sqltext = 'UPDATE "{0}"."{1}" ' \
+                  'SET nz = 3, height = 3 * {2}' \
+                  'WHERE nz < 3 OR height < 3 * {2}'\
+                  .format(cfg.domain.case_schema,
+                          cfg.tables.buildings_grid, cfg.domain.dz)
+        cur.execute(sqltext)
+        sql_debug(connection)
+        connection.commit()
+
     restore_log_level(cfg)
 
 def update_force_cyclic(cfg, connection, cur):
