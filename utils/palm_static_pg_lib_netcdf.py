@@ -367,8 +367,8 @@ def write_soil(ncfile, cfg, connection, cur):
                                show_plots = cfg.visual_check.show_plots)
 
 def write_buildings(ncfile, cfg, connection, cur):
-    # write building_height (buildings_2d), building_id and building_type into netcdf file
-    # building id
+    """ write building_height (buildings_2d), building_id and building_type into netcdf file
+    """
     sqltext = 'select b.lid from "{0}"."{1}" g ' \
               'left outer join "{0}"."{2}" b on b.id = g.id order by g.j, g.i' \
         .format(cfg.domain.case_schema, cfg.tables.grid, cfg.tables.buildings_grid)
@@ -417,3 +417,69 @@ def write_buildings(ncfile, cfg, connection, cur):
                                x=np.asarray(ncfile.variables['x']), y=np.asarray(ncfile.variables['y']),
                                var_name=vn, par_id='', text_id='building_type', path=cfg.visual_check.path,
                                show_plots = cfg.visual_check.show_plots)
+
+def write_trees_grid(ncfile, cfg, connection, cur):
+    """ Routine to generate trees """
+    change_log_level(cfg.logs.level_trees)
+    debug('get max height of the tree in the domain (relative height from ground)')
+    sqltext = 'select max(vysstr) from "{0}"."{1}"'.format(cfg.domain.case_schema, cfg.tables.trees)
+    cur.execute(sqltext)
+    ret = cur.fetchone()
+    nzlad = ceil(ret[0] / cfg.domain.dz) + 1
+    sql_debug(connection)
+    # construct lad array
+    debug('nzlad = {}', nzlad)
+    vt = 'f4'
+    lad = np.zeros((nzlad, cfg.domain.ny, cfg.domain.nx), dtype=vt)
+    bad = np.zeros((nzlad, cfg.domain.ny, cfg.domain.nx), dtype=vt)
+    sqltext = 'select i, j'
+    for l in range(nzlad):
+        sqltext += ', lad_{0}, bad_{0}'.format(l)
+    sqltext += ' from "{0}"."{1}"'.format(cfg.domain.case_schema, cfg.tables.trees_grid)
+    cur.execute(sqltext)
+    trees = cur.fetchall()
+    # construct lad array
+    for tree in trees:
+        # call palm_tree_lad sql function for itree
+        i, j = tree[0], tree[1]
+        extra_verbose('tree: [j, i], [{},{}]', i, j)
+        for l in range(nzlad):
+            lad[l, j, i] += tree[2 * l + 2]
+            bad[l, j, i] += tree[2 * l + 3]
+
+    debug('Crop lad / bad to configured max lad / bad')
+    lad[lad > cfg.trees.max_lad] = cfg.trees.max_lad
+    bad[bad > cfg.trees.max_bad] = cfg.trees.max_bad
+
+    debug('create zlad and zbad dimensions')
+    zlad = [0] + [x * cfg.domain.dz + 0.5 * cfg.domain.dz for x in range(nzlad)]
+    nc_create_dimension(ncfile, 'zlad', nzlad+1)
+    temp = ncfile.createVariable('zlad', vt, 'zlad')
+    temp[:] = zlad[:]
+    # create and write lad and bad variables
+    vn = 'lad'
+    var = ncfile.createVariable(vn, vt, ('zlad', 'y', 'x'), fill_value=cfg.fill_values[vt])
+    nc_write_attribute(ncfile, vn, 'long_name', 'leaf area density')
+    nc_write_attribute(ncfile, vn, 'units', 'm2/m3')
+    nc_write_attribute(ncfile, vn, 'res_orig', cfg.domain.dz)
+    nc_write_attribute(ncfile, vn, 'coordinates', 'E_UTM N_UTM lon lat')
+    nc_write_attribute(ncfile, vn, 'grid_mapping', 'E_UTM N_UTM lon lat')
+    var[1:, :, :] = lad
+    vn = 'bad'
+    var = ncfile.createVariable(vn, vt, ('zlad', 'y', 'x'), fill_value=cfg.fill_values[vt])
+    nc_write_attribute(ncfile, vn, 'long_name', 'branch area density')
+    nc_write_attribute(ncfile, vn, 'units', 'm3/m3')
+    nc_write_attribute(ncfile, vn, 'res_orig', cfg.domain.dz)
+    nc_write_attribute(ncfile, vn, 'coordinates', 'E_UTM N_UTM lon lat')
+    nc_write_attribute(ncfile, vn, 'grid_mapping', 'E_UTM N_UTM lon lat')
+    var[1:, :, :] = bad
+    if cfg.visual_check.enabled:
+        for k in range(nzlad):
+            variable_visualization(var=ncfile['lad'][k, ...],
+                                   x=np.asarray(ncfile.variables['x']), y=np.asarray(ncfile.variables['y']),
+                                   var_name='lad', par_id=k, text_id='leaf_area_density', path=cfg.visual_check.path,
+                                   show_plots=cfg.visual_check.show_plots)
+            variable_visualization(var=ncfile['bad'][k, ...],
+                                   x=np.asarray(ncfile.variables['x']), y=np.asarray(ncfile.variables['y']),
+                                   var_name='bad', par_id=k, text_id='trunk_area_density', path=cfg.visual_check.path,
+                                   show_plots=cfg.visual_check.show_plots)
