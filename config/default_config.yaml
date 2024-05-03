@@ -70,11 +70,14 @@ tables:
     height_corrected:       'building_height_correct'
     height_terr_corrected:  'terrain_height_correct'
     slanted_wall_points:    'slanted_wall_points'
+    trees:                  'trees'
+    trees_grid:             'trees_grid'
     
 idx:
     landcover: 'lid'
     walls:     'wid'
     roofs:     'rid'
+    trees:     'sid'
 
 origin_time: '1970-01-01 00:00:00'
 
@@ -109,6 +112,15 @@ force_cyclic: False
 force_cyclic_nc: 4
 force_building_boundary: True
 force_building_boundary_dist: 3 # distance in grid points, real distance =* dx
+
+trees:
+    lad_reduction: 1.0    # coefficient for reduction of LAD in winter
+    bad_coef: 0.1         # coefficient for reduction of BAD from LAD to account branches
+    nhv: 10               # number of discretization layers for calculation of tree vertical shapes
+    nump: 10              # number of polygon edges for interpolation of cycles for treetops and tree trunks
+    ext_coef: 0.6         # Extinction coefficient (same as in PALM code) for tree crown transmissivity
+    max_lad: 1.6
+    max_bad: 1.6
 
 # compression of the output netcdf file
 zlib: False

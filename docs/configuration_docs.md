@@ -113,50 +113,57 @@
 | **maxbuildingdisance**                  | 5.0                                | Distance to search in neighbors in case of missing height in buildings grid cell |
 | **cortyard_fill.apply**                 | False                              | Option that fill cortyard |
 | **cortyard_fill.count**                 | 30                                 | Cortyards smaller that count grid cell are filled |
-| **topo_fill_v2.apply**                  | False | PALM replicated filter for topo filtering |
-| **topo_fill_v2.apply**                  | 9 | Number of adjacent gridcell tobe filtered |
-| **force_lsm_only**                          | False                              | Option to force static driver into land surface only |
-| **force_cyclic**                            | False                              | Option to force static driver to cyclic boundary condition |
-| **force_cyclic_nc**                         | 4                                  | Number of boundary cell to apply cyclic boundary condition |
-| **force_building_boundary**                 | True                               | Option to delete buildings that are close to domain boarder |
-| **force_building_boundary_dist**            | 3                                  | Distance in grid points for **force_buildings_boundary**, real distance =* dx |
-| **zlib**                                    | False                              | Option that compresses static driver netcdf file |
-| **complevel**                               | 4                                  | Compression level |
-| **fill_values.b**                           | -127                               | Fill value for netCDF file, byte |
-| **fill_values.i**                           | -9999                              | Fill value for netCDF file, integer |
-| **fill_values.i4**                          | -9999                              | Fill value for netCDF file, integer |
-| **fill_values.f4**                          | -9999.0                            | Fill value for netCDF file, float |
-| **fill_values.f8**                          | -9999.0                            | Fill value for netCDF file, float8 |
-| **ncprops.acronym**                         | ICS                                | Accronim of Institution |
-| **ncprops.author**                          | Jaroslav Resler \ resler@cs.cas.cz | Name of static driver file author |
-| **ncprops.campaign**                        | ""                                 | Name of campaign |
-| **ncprops.comment**                         | ""                                 | Comment |
-| **ncprops.contact_person**                  | resler@cs.cas.cz                   | Contact author |
-| **ncprops.data_content**                    | ""                                 |  |
-| **ncprops.dependencies**                    | ""                                 |  |
-| **ncprops.institution**                     | ""                                 |  |
-| **ncprops.keywords**                        | ""                                 |  |
-| **ncprops.location**                        | ""                                 |  |
-| **ncprops.palm_version**                    | ""                                 |  |
-| **ncprops.references**                      | ""                                 |  |
-| **ncprops.rotation_angle**                  | ""                                 |  |
-| **ncprops.site**                            | ""                                 |  |
-| **ncprops.source**                          | UrbanAtlas, OpenStreetMaps         |  |
-| **ncprops.version**                         | ""                                 |  |
-| **ndims.nwater_pars**                       | 7                                  | Number of elements in water_pars |
-| **ground.soil_type_default**                | 3                                  | Default soil type medium-fine in terms of porosity |
-| **type_range.vegetation_min**               | 100                                | See [Types](general.md) |
-| **type_range.vegetation_max**               | 199                                |  |
-| **type_range.pavement_min**                 | 200                                |  |
-| **type_range.pavement_max**                 | 299                                |  |
-| **type_range.water_min**                    | 300                                |  |
-| **type_range.water_max**                    | 399                                |  |
-| **type_range.building_min**                 | 900                                |  |
-| **type_range.building_max**                 | 999                                |  |
-| **water_pars_temp.1**                       | 283.15                             | Water body temperature for type 1 |
-| **water_pars_temp.2**                       | 283.15                             | Water body temperature for type 2 |
-| **water_pars_temp.3**                       | 283.15                             | Water body temperature for type 3 |
-| **water_pars_temp.4**                       | 283.15                             | Water body temperature for type 4 |
-| **water_pars_temp.5**                       | 283.15                             | Water body temperature for type 5 |
-| **water_pars_temp.6**                       | 283.15                             | Water body temperature for type 6 |
-| **** |  |  |
+| **topo_fill_v2.apply**                  | False                              | PALM replicated filter for topo filtering |
+| **topo_fill_v2.apply**                  | 9                                  | Number of adjacent gridcell tobe filtered |
+| **force_lsm_only**                      | False                              | Option to force static driver into land surface only |
+| **force_cyclic**                        | False                              | Option to force static driver to cyclic boundary condition |
+| **force_cyclic_nc**                     | 4                                  | Number of boundary cell to apply cyclic boundary condition |
+| **force_building_boundary**             | True                               | Option to delete buildings that are close to domain boarder |
+| **force_building_boundary_dist**        | 3                                  | Distance in grid points for **force_buildings_boundary**, real distance =* dx |
+| **zlib**                                | False                              | Option that compresses static driver netcdf file |
+| **complevel**                           | 4                                  | Compression level |
+| **fill_values.b**                       | -127                               | Fill value for netCDF file, byte |
+| **fill_values.i**                       | -9999                              | Fill value for netCDF file, integer |
+| **fill_values.i4**                      | -9999                              | Fill value for netCDF file, integer |
+| **fill_values.f4**                      | -9999.0                            | Fill value for netCDF file, float |
+| **fill_values.f8**                      | -9999.0                            | Fill value for netCDF file, float8 |
+| **ncprops.acronym**                     | ICS                                | Accronim of Institution |
+| **ncprops.author**                      | Jaroslav Resler \ resler@cs.cas.cz | Name of static driver file author |
+| **ncprops.campaign**                    | ""                                 | Name of campaign |
+| **ncprops.comment**                     | ""                                 | Comment |
+| **ncprops.contact_person**              | resler@cs.cas.cz                   | Contact author |
+| **ncprops.data_content**                | ""                                 |  |
+| **ncprops.dependencies**                | ""                                 |  |
+| **ncprops.institution**                 | ""                                 |  |
+| **ncprops.keywords**                    | ""                                 |  |
+| **ncprops.location**                    | ""                                 |  |
+| **ncprops.palm_version**                | ""                                 |  |
+| **ncprops.references**                  | ""                                 |  |
+| **ncprops.rotation_angle**              | ""                                 |  |
+| **ncprops.site**                        | ""                                 |  |
+| **ncprops.source**                      | UrbanAtlas, OpenStreetMaps         |  |
+| **ncprops.version**                     | ""                                 |  |
+| **ndims.nwater_pars**                   | 7                                  | Number of elements in water_pars |
+| **ground.soil_type_default**            | 3                                  | Default soil type medium-fine in terms of porosity |
+| **type_range.vegetation_min**           | 100                                | See [Types](general.md) |
+| **type_range.vegetation_max**           | 199                                |  |
+| **type_range.pavement_min**             | 200                                |  |
+| **type_range.pavement_max**             | 299                                |  |
+| **type_range.water_min**                | 300                                |  |
+| **type_range.water_max**                | 399                                |  |
+| **type_range.building_min**             | 900                                |  |
+| **type_range.building_max**             | 999                                |  |
+| **water_pars_temp.1**                   | 283.15                             | Water body temperature for type 1 |
+| **water_pars_temp.2**                   | 283.15                             | Water body temperature for type 2 |
+| **water_pars_temp.3**                   | 283.15                             | Water body temperature for type 3 |
+| **water_pars_temp.4**                   | 283.15                             | Water body temperature for type 4 |
+| **water_pars_temp.5**                   | 283.15                             | Water body temperature for type 5 |
+| **water_pars_temp.6**                   | 283.15                             | Water body temperature for type 6 |
+| **trees.lad_reduction**                 | 1.0                                | coefficient for reduction of LAD in winter |
+| **trees.bad_coef**                      | 0.1                                | coefficient for reduction of BAD from LAD to account branches |
+| **trees.nhv**                           | 10                                 | number of discretization layers for calculation of tree vertical shapes |
+| **trees.nump**                          | 10                                 | number of polygon edges for interpolation of cycles for treetops and tree trunks |
+| **trees.ext_coef**                      | 0.6                                | Extinction coefficient (same as in PALM code) for tree crown transmissivity |
+| **trees.max_lad**                       | 1.6                                | Max LAD |
+| **trees.max_bad**                       | 1.6                                | Max BAD |
+| ****                                    |                                    |  |
