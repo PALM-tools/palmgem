@@ -34,6 +34,20 @@ def check_consistency(ncfile, cfg):
                 missing_values, pavement_type_default)
         extra_verbose('Missing grid: {}', np.where(mask))
 
+    if cfg.has_buildings_3d:
+        mask_3d = np.logical_and(
+                          np.logical_and(~ncfile.variables['building_id'][:].mask,
+                                         ncfile.variables['buildings_3d'][0, :, :] == 0),  # is 3d structure with empty bottom
+                          ~np.logical_or(np.logical_or(~ncfile.variables['pavement_type'][:,:].mask,
+                                                       ~ncfile.variables['water_type'][:,:].mask),
+                                         ~ncfile.variables['vegetation_type'][:,:].mask)) # not defined pavement / water / vegetation type
+        missing_values = np.sum(mask_3d)
+        if missing_values > 0:
+            warning('There are {} missing values that were filled with default pavement type {}',
+                    missing_values, pavement_type_default)
+            extra_verbose('Missing grids: {}', np.where(mask_3d))
+        mask = np.logical_or(mask, mask_3d)
+
     pt = ncfile.variables['pavement_type'][:, :]
     pt = np.where(mask, pavement_type_default, pt)
     ncfile.variables['pavement_type'][:, :] = pt
