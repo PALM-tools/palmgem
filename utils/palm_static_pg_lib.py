@@ -153,8 +153,8 @@ def copy_vectors_from_input(grid_ext, cfg, connection, cur):
 
         params: grid_ext: rectangle polygon around grid, created in calculate_grid_extend function
     """
-    vtables = [cfg.tables.landcover, cfg.tables.trees]
-    vidx = [cfg.idx.landcover, cfg.idx.trees]
+    vtables = [cfg.tables.landcover, cfg.tables.trees, cfg.tables.extras_shp]
+    vidx = [cfg.idx.landcover, cfg.idx.trees, cfg.idx.extras_shp]
     vtabs = []
     for rel, idx in zip(vtables, vidx):
         # check if table exists in input source schema
@@ -278,7 +278,7 @@ def copy_rasters_from_input(grid_ext, cfg, connection, cur):
 
         params: grid_ext: rectangle polygon around grid, created in calculate_grid_extend function
     """
-    rtables = [cfg.tables.dem, cfg.tables.buildings_height, ]
+    rtables = [cfg.tables.dem, cfg.tables.buildings_height, cfg.tables.extras]
     rtabs = []
     for rel in rtables:
         # check if table exists in input source schema
@@ -343,7 +343,7 @@ def copy_rasters_from_input(grid_ext, cfg, connection, cur):
             exit(1)
     return rtabs
 
-def check_buildings(cfg, connection, cur, rtabs, grid_ext):
+def check_buildings(cfg, connection, cur, rtabs, vtabs, grid_ext):
     """ Check if USM are present in domain """
     verbose('Checking if buildings raster is present in inputs')
     cfg._settings['has_buildings'] = False
@@ -394,6 +394,17 @@ def check_buildings(cfg, connection, cur, rtabs, grid_ext):
         sqltext = 'UPDATE "{0}"."{1}" AS l SET type = 202 ' \
                   'WHERE type >= {2}'.format(cfg.domain.case_schema, cfg.tables.landcover, cfg.type_range.building_min)
         cur.execute(sqltext)
+        sql_debug(connection)
+        connection.commit()
+
+    if cfg.tables.extras_shp in vtabs and cfg.tables.extras in rtabs:
+        debug('Buildings 3d are present in inputs, will be processed')
+        cfg._settings['has_3d_buildings'] = True
+    else:
+        cfg._settings['has_3d_buildings'] = False
+        verbose('Buildings 3d are not present in inputs')
+        cur.execute('DROP TABLE IF EXISTS "{0}"."{1}"'.format(cfg.domain.case_schema, cfg.tables.extras_shp))
+        cur.execute('DROP TABLE IF EXISTS "{0}"."{1}"'.format(cfg.domain.case_schema, cfg.tables.extras))
         sql_debug(connection)
         connection.commit()
 
@@ -575,11 +586,11 @@ def filling_grid(cfg, connection, cur):
     debug('Create nz_temp')
     sqltext = 'CREATE TEMP TABLE "nz_temp" AS ' \
 	            'SELECT g.i AS i, g.j AS j,  ' \
-	            'CASE WHEN b.height IS NOT NULL THEN b.nz+bo.max_int' \
+	            'CASE WHEN b.height IS NOT NULL AND NOT b.is_bridge THEN b.nz+bo.max_int' \
 		        '     ELSE g.nz END AS nz, ' \
-                'CASE WHEN b.height IS NOT NULL THEN true ' \
+                'CASE WHEN b.height IS NOT NULL AND NOT b.is_bridge THEN true ' \
                 '     ELSE false END AS is_building, ' \
-                'CASE WHEN b.height IS NOT NULL THEN b.height+bo.max_int + {6} ' \
+                'CASE WHEN b.height IS NOT NULL AND NOT b.is_bridge THEN b.height+bo.max_int + {6} ' \
                 '     ELSE g.height END AS height ' \
                 'FROM "{2}"."{3}" AS g ' \
 	            'LEFT OUTER JOIN "{2}"."{4}" AS b ON g.id=b.id  ' \
@@ -659,7 +670,8 @@ def filling_grid(cfg, connection, cur):
     sqltext = 'UPDATE "{0}"."{1}" AS b SET (height, nz) = (SELECT nt.height - bo.max_int - {2}, nt.nz - bo.max_int' \
               '   FROM "nz_temp" AS nt ' \
               '   LEFT OUTER JOIN "{0}"."{3}"  AS bo ON b.lid = bo.lid' \
-              '   WHERE nt.is_building AND b.i=nt.i AND b.j = nt.j)'.format(
+              '   WHERE nt.is_building AND b.i=nt.i AND b.j = nt.j) ' \
+              ' WHERE NOT b.is_bridge'.format(
                 cfg.domain.case_schema, cfg.tables.buildings_grid, cfg.domain.oro_min, cfg.tables.buildings_offset)
     cur.execute(sqltext)
 
@@ -692,9 +704,9 @@ def fill_topo_v2(cfg, connection, cur):
     debug('Create nz_temp')
     sqltext = 'CREATE TABLE "{2}"."nz_temp" AS ' \
               'SELECT g.id, g.i AS i, g.j AS j, g.geom AS geom,  ' \
-              'CASE WHEN b.height IS NOT NULL THEN b.nz+bo.max_int' \
+              'CASE WHEN b.height IS NOT NULL AND NOT b.is_bridge THEN b.nz+bo.max_int' \
               '     ELSE g.nz END AS nz, ' \
-              'CASE WHEN b.height IS NOT NULL THEN true ' \
+              'CASE WHEN b.height IS NOT NULL AND NOT b.is_bridge THEN true ' \
               '     ELSE false END AS is_building ' \
               'FROM "{2}"."{3}" AS g ' \
               'LEFT OUTER JOIN "{2}"."{4}" AS b ON g.id=b.id  ' \
@@ -823,6 +835,7 @@ def fill_topo_v2(cfg, connection, cur):
               '   FROM "{0}"."nz_temp" AS nt ' \
               '   LEFT OUTER JOIN "{0}"."{3}"  AS bo ON b.lid = bo.lid' \
               '   WHERE nt.is_building AND b.id = nt.id) ' \
+              ' WHERE NOT b.is_bridge' \
               .format(cfg.domain.case_schema, cfg.tables.buildings_grid, cfg.domain.oro_min, cfg.tables.buildings_offset)
     cur.execute(sqltext)
 
@@ -987,6 +1000,170 @@ def connect_buildings_height(cfg, connection, cur):
     connection.commit()
     progress('2d buildings done')
 
+    verbose('add 3d buildings related columns')
+    sqltext = 'alter table "{0}"."{1}" ' \
+              ' ADD IF NOT EXISTS has_bottom    BOOLEAN DEFAULT FALSE, ' \
+              ' ADD IF NOT EXISTS height_bottom DOUBLE PRECISION, ' \
+              ' ADD IF NOT EXISTS lid_extra     INTEGER, ' \
+              ' ADD IF NOT EXISTS is_bridge     BOOLEAN DEFAULT FALSE, ' \
+              ' ADD IF NOT EXISTS upper         BOOLEAN DEFAULT FALSE, ' \
+              ' ADD IF NOT EXISTS under         BOOLEAN DEFAULT FALSE'.format(
+        cfg.domain.case_schema, cfg.tables.buildings_grid)
+    cur.execute(sqltext)
+    sql_debug(connection)
+    connection.commit()
+
+    if cfg.has_3d_buildings:
+        progress('Process 3d buildings')
+        debug('Join tables with extras_shp')
+        sqltext = 'UPDATE "{0}"."{1}" ' \
+                  ' SET has_bottom = True, lid_extra = shp.gid ' \
+                  ' FROM "{0}"."{2}" AS shp' \
+                  ' WHERE ST_Within( ST_SetSRID(ST_Point(xcen,ycen),%s), shp.geom) AND shp.class3d IN (%s, %s)'.format(
+            cfg.domain.case_schema, cfg.tables.buildings_grid, cfg.tables.extras_shp)
+        cur.execute(sqltext, (cfg.srid_palm, cfg.build_3d.overhanging, cfg.build_3d.passage))
+        sql_debug(connection)
+        connection.commit()
+
+        debug('Process bottom height of buildings')
+        sqltext = 'UPDATE "{0}"."{1}" AS bd ' \
+                  ' SET height_bottom = ( SELECT ST_Value(rast, ST_SetSRID( ST_Point(bd.xcen,bd.ycen) , %s)) ' \
+                  ' FROM "{0}"."{2}" AS b WHERE ST_intersects(b.rast,  bd.geom) LIMIT 1) ' \
+                  ' WHERE bd.has_bottom' \
+            .format(cfg.domain.case_schema, cfg.tables.buildings_grid, cfg.tables.extras)
+        cur.execute(sqltext, (cfg.srid_palm,))
+        sql_debug(connection)
+        connection.commit()
+
+        # update missing ones from the nearest neighbors
+        sqltext = 'UPDATE "{0}"."{1}" AS bd ' \
+                  ' SET height_bottom = ( SELECT bdd.height_bottom FROM "{0}"."{1}" AS bdd ' \
+                  '   WHERE (bdd.height_bottom != 0 OR (bdd.height_bottom IS NOT NULL AND bdd.height_bottom != 0)) ' \
+                  '   ORDER BY ST_Distance(ST_SetSrid(ST_Point(bdd.xcen,bdd.ycen), %s), ' \
+                  '                        ST_SetSrid(ST_Point(bd.xcen, bd.ycen),  %s)) ' \
+                  '   LIMIT 1) ' \
+                  ' WHERE bd.has_bottom AND bd.height_bottom IS NULL' \
+            .format(cfg.domain.case_schema, cfg.tables.buildings_grid)
+        cur.execute(sqltext, (cfg.srid_palm, cfg.srid_palm,))
+        sql_debug(connection)
+        connection.commit()
+
+        # calculate nz_bottom
+        sqltext = 'UPDATE "{0}"."{1}" SET nz_min = CAST(ROUND(height_bottom/{2}+0.001) AS INTEGER)' \
+                  ' WHERE has_bottom'.format(
+            cfg.domain.case_schema, cfg.tables.buildings_grid, cfg.domain.dz)
+        cur.execute(sqltext)
+        sql_debug(connection)
+        connection.commit()
+
+        debug('3d buildings bottom done')
+        progress('Process bridges')
+
+        # remove all height from building_grid, which are bridge
+        debug('Update buildings grid where bridges are placed')
+        sqltext = 'UPDATE "{0}"."{1}" SET (height, nz) = (Null ,Null)' \
+                  'WHERE type = 907 '.format(cfg.domain.case_schema, cfg.tables.buildings_grid)
+        cur.execute(sqltext)
+        sql_debug(connection)
+        connection.commit()
+
+        # connect lid with bridge shp
+        debug('Connect bridge extras_shp')
+        sqltext = 'UPDATE "{0}"."{1}" ' \
+                  ' SET is_bridge = TRUE, lid_extra = shp.gid FROM "{0}"."{2}" AS shp' \
+                  ' WHERE ST_Within( ST_SetSRID(ST_Point(xcen,ycen),%s), shp.geom) AND shp.class3d = %s' \
+                  ' AND lid_extra IS NULL'.format(
+            cfg.domain.case_schema, cfg.tables.buildings_grid, cfg.tables.extras_shp)
+        cur.execute(sqltext, (cfg.srid_palm, cfg.build_3d.bridge))
+
+        debug('Update index is bridge for buildings grid')
+        sqltext = 'UPDATE "{0}"."{1}" AS b ' \
+                  ' SET (is_bridge, lid_extra) = (SELECT TRUE, bb.lid_extra FROM "{0}"."{1}" AS bb ' \
+                  ' WHERE bb.lid_extra IS NOT NULL ' \
+                  ' ORDER BY ST_Distance(ST_SetSRID(ST_Point(b.xcen,  b.ycen), %s),' \
+                  '                      ST_SetSRID(ST_Point(bb.xcen,bb.ycen), %s)) ' \
+                  ' LIMIT 1) ' \
+                  ' WHERE b.type = 907 AND lid_extra IS NULL'
+        sqltext = sqltext.format(cfg.domain.case_schema, cfg.tables.buildings_grid)
+        cur.execute(sqltext, (cfg.srid_palm, cfg.srid_palm,))
+        sql_debug(connection)
+        connection.commit()
+
+        # fill with heights
+        debug('Update height and bottom height of bridges, different approach compared to buildings')
+        sqltext = 'UPDATE "{0}"."{1}" AS br ' \
+                  ' SET (height, height_bottom) = ( SELECT val, val - {3} FROM ( ' \
+                  ' SELECT (ST_PixelAsPoints(b.rast)).geom AS geom, (ST_PixelAsPoints(b.rast)).val AS val ' \
+                  ' FROM "{0}"."{2}" AS b WHERE ST_intersects(b.rast,  br.geom) ) AS bp ' \
+                  ' WHERE ST_Intersects(bp.geom, br.geom) ' \
+                  ' ORDER BY ST_Distance(bp.geom, ST_SetSRID(ST_Point(br.xcen,br.ycen), %s)) ' \
+                  ' LIMIT 1 ) ' \
+                  ' WHERE is_bridge' \
+            .format(cfg.domain.case_schema, cfg.tables.buildings_grid, cfg.tables.extras, cfg.build_3d.bridge_width)
+        cur.execute(sqltext, (cfg.srid_palm,))
+        sql_debug(connection)
+        connection.commit()
+
+        debug('Fill remaining heights from nearest ones or default')
+        sqltext = 'UPDATE "{0}"."{1}" AS br ' \
+                  ' SET (height, height_bottom) = (' \
+                  '  SELECT brn.height, brn.height_bottom FROM "{0}"."{2}" AS brn ' \
+                  '   WHERE (brn.height != 0 OR (brn.height IS NOT NULL AND brn.height != 0)) ' \
+                  '   ORDER BY ST_Distance(ST_SetSrid(ST_Point(brn.xcen,brn.ycen), %s), ' \
+                  '                        ST_SetSrid(ST_Point(br.xcen, br.ycen), %s)) ' \
+                  '   LIMIT 1 ) ' \
+                  ' WHERE (br.height IS NULL OR br.height = 0) AND br.is_bridge ' \
+            .format(cfg.domain.case_schema, cfg.tables.buildings_grid, cfg.tables.buildings_grid)
+        cur.execute(sqltext, (cfg.srid_palm, cfg.srid_palm,))
+        sql_debug(connection)
+        connection.commit()
+
+        debug('Calculate nz, nz_min for bridges')
+        sqltext = 'UPDATE "{0}"."{1}" SET (nz_min, nz) = ( CAST(ROUND(height_bottom/{2}+0.001) AS INTEGER), ' \
+                  '                                        CAST(ROUND(height/{2}+0.001)        AS INTEGER)) ' \
+                  'WHERE is_bridge'.format(
+            cfg.domain.case_schema, cfg.tables.buildings_grid, cfg.domain.dz)
+        cur.execute(sqltext)
+        sql_debug(connection)
+        connection.commit()
+
+        verbose('Correct cases where nz_min == 1, 1 grid empty space, is filled in PALM')
+        sqltext = 'UPDATE "{0}"."{1}" ' \
+                  ' SET nz_min = 0 WHERE nz_min <= 1 ' \
+            .format(cfg.domain.case_schema, cfg.tables.buildings_grid, cfg.domain.dz)
+        cur.execute(sqltext)
+        sql_debug(connection)
+        connection.commit()
+
+        verbose('Do a correction for buildings with nz < 1, under dz resolution')
+        sqltext = 'UPDATE "{0}"."{1}" ' \
+                  ' SET (upper, under) = (false, true) ' \
+            .format(cfg.domain.case_schema, cfg.tables.buildings_grid, cfg.domain.dz)
+        cur.execute(sqltext)
+        sql_debug(connection)
+        connection.commit()
+
+        verbose('Do a correction for buildings with nz < 1, under dz resolution')
+        sqltext = 'UPDATE "{0}"."{1}" ' \
+                  ' SET (upper, under) = (true, false) ' \
+                  ' WHERE nz < 1 ' \
+            .format(cfg.domain.case_schema, cfg.tables.buildings_grid, cfg.domain.dz)
+        cur.execute(sqltext)
+        sql_debug(connection)
+        connection.commit()
+
+        verbose('Do a correction for buildings with nz < 1, under dz resolution')
+        sqltext = 'UPDATE "{0}"."{1}" ' \
+                  ' SET under = false ' \
+                  ' WHERE nz < 1 OR nz_min IS NULL OR nz_min = 0' \
+            .format(cfg.domain.case_schema, cfg.tables.buildings_grid, cfg.domain.dz)
+        cur.execute(sqltext)
+        sql_debug(connection)
+        connection.commit()
+
+        debug('Bridges are done')
+
+    # TODO: include is_bridge in all filtering routines
     # terrain improvement
     progress('Terrain improvement')
     sqltext = 'drop table if exists "{0}"."{1}"'.format(cfg.domain.case_schema, cfg.tables.buildings_offset)
@@ -1021,7 +1198,7 @@ def connect_buildings_height(cfg, connection, cur):
     # add art_elev to build height
     sqltext = 'UPDATE "{0}"."{1}" AS b SET nz = nz + bo.art_elev, height = height + bo.art_elev*{3} ' \
               ' FROM "{0}"."{2}" AS bo ' \
-              ' WHERE b.lid = bo.lid AND bo.art_elev > 0'.format(cfg.domain.case_schema,
+              ' WHERE b.lid = bo.lid AND bo.art_elev > 0 AND NOT b.is_bridge'.format(cfg.domain.case_schema,
               cfg.tables.buildings_grid, cfg.tables.buildings_offset, cfg.domain.dz)
     cur.execute(sqltext)
     sql_debug(connection)

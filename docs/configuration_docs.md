@@ -68,7 +68,7 @@
 | **domain.dy**                           | 10.0                               | Resolution in y-direction |
 | **domain.dz**                           | 10.0                               | Resolution in z-direction |
 | **domain.nx**                           | 128                                | Number of grid cell in x-direction |
-| **domain.ny**                           | 128                                | Number of grid cell in x-direction  |
+| **domain.ny**                           | 128                                | Number of grid cell in x-direction |
 | **domain.cent_x**                       | 459180                             | Center of domain in palm_srid, x-coordinate |
 | **domain.cent_y**                       | 5547800                            | Center of domain in palm_srid, y-coordinate |
 | **default_height.0**                    | 6.0                                | Default height of building type 0 (According to PALM PIDS), in case of buildings height are missing at building location. |
@@ -106,9 +106,17 @@
 | **tables.height_corrected**             | building_height_correct            | Name of buildings height correction's table |
 | **tables.height_terr_corrected**        | terrain_height_correct             | Name of terrain's height correction's table |
 | **tables.slanted_wall_points**          | slanted_wall_points                | Name of slanted points in wall table |
+| **tables.extras**                       | extras                             | Table for buildings 3d landcover|
+| **tables.extras_shp**                   | extras_shp                         | Table for buildinds 3d raster|
 | **idx.landcover**                       | lid                                | Landcover unique index |
 | **idx.walls**                           | wid                                | Walls unique index |
 | **idx.roofs**                           | rid                                | Roofs unique index |
+| **idx.buildings_depth_shp**             | gid                                | Index for buildings depth index |
+| **idx.extras_shp**                      | gid                                | Index for buildings shape index |
+| **build_3d.bridge_width**               | 2.0                                | Width of bridge |
+| **build_3d.bridge**                     | bridge                             | Name for buildings 3d for bridge |
+| **build_3d.passage**                    | passage                            | Name for buildings 3d for bridge |
+| **build_3d.overhanging**                | overhang                           | Name for buildings 3d for bridge |
 | **origin_time**                         | 1970-01-01 00:00:00                | Origin time of simulation |
 | **maxbuildingdisance**                  | 5.0                                | Distance to search in neighbors in case of missing height in buildings grid cell |
 | **cortyard_fill.apply**                 | False                              | Option that fill cortyard |

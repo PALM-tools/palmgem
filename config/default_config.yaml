@@ -72,12 +72,23 @@ tables:
     slanted_wall_points:    'slanted_wall_points'
     trees:                  'trees'
     trees_grid:             'trees_grid'
+    extras:                 'extras'
+    extras_shp:             'extras_shp'
+    
     
 idx:
     landcover: 'lid'
     walls:     'wid'
     roofs:     'rid'
     trees:     'sid'
+    buildings_depth_shp: 'gid'
+    extras_shp: 'gid'
+    
+build_3d:
+    bridge_width: 2.0
+    bridge:       'bridge'
+    passage:      'passage'
+    overhanging:  'overhang'
 
 origin_time: '1970-01-01 00:00:00'
 
@@ -169,12 +180,13 @@ ground:
 type_range:
     vegetation_min: 100
     vegetation_max: 199
-    pavement_min: 200
-    pavement_max: 299
-    water_min: 300
-    water_max: 399
-    building_min: 900
-    building_max: 999
+    pavement_min:   200
+    pavement_max:   299
+    water_min:      300
+    water_max:      399
+    building_min:   900
+    building_max:   999
+    bridge:         907
 
 water_pars_temp:       # assign water body temperature according to landcover type
     1: 283.15

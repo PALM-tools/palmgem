@@ -24,7 +24,8 @@ Detailed list of all available configuration are listed here: [configuration lis
 Running preprocessor python script and its configuration is documented here: [preprocesor run](docs/run_preprocessor.md) \
 The main run of static driver generator with its configuration is documented here: [static driver generator](docs/run_palm_static_driver.md)
 [Tutorial](docs/visuallization.md) how to connection PostgreSQL database with QGIS application and enable interactive visualization.
-Brief description of cut cell topography - slanted faces is documented here: [cut cell topography](docs/cut_cell_topo.md)
+Brief description of cut cell topography - slanted faces is documented here: [cut cell topography](docs/cut_cell_topo.md) \
+Buildings 3D, Brief description of processing of buildings 3d are shown [HERE](docs/buildings_3d.md)
 
 ## Contributing / Support
 If you wish to use your own dataset with more detailed parameterization, please contact us. We will gladly help with implementation.

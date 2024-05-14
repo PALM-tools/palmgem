@@ -418,6 +418,154 @@ def write_buildings(ncfile, cfg, connection, cur):
                                var_name=vn, par_id='', text_id='building_type', path=cfg.visual_check.path,
                                show_plots = cfg.visual_check.show_plots)
 
+    if cfg.has_3d_buildings:
+        debug('Write buildings_3d into static driver')
+        verbose('Prepare netcdf variable')
+        vt = 'b'
+        vn = 'buildings_3d'
+        sqltext = 'SELECT MAX(nz) FROM "{}"."{}"'.format(cfg.domain.case_schema, cfg.tables.buildings_grid)
+        cur.execute(sqltext)
+        sql_debug(connection)
+        max_nz = int(cur.fetchone()[0]) + 1
+        # create z dimension
+        nc_create_dimension(ncfile, 'z', max_nz)
+        ncfile.createVariable('z', 'f4', ('z'))
+        ncfile['z'][:] = np.append(0, np.arange(cfg.domain.dz / 2.0, (max_nz - 1) * cfg.domain.dz, cfg.domain.dz))
+        nc_write_attribute(ncfile, 'z', 'long_name', 'z')
+        nc_write_attribute(ncfile, 'z', 'standard_name', 'projection_z_coordinate')
+        nc_write_attribute(ncfile, 'z', 'units', 'm')
+        ncfile.createVariable(vn, vt, ('z', 'y', 'x'), fill_value=cfg.fill_values[vt])
+        nc_write_attribute(ncfile, vn, 'coordinates', 'E_UTM N_UTM lon lat')
+        nc_write_attribute(ncfile, vn, 'flag_meanings', 'no building, building')
+        nc_write_attribute(ncfile, vn, 'long_name', 'buildings_3d')
+        nc_write_attribute(ncfile, vn, 'res_orig', cfg.domain.dz)
+        nc_write_attribute(ncfile, vn, 'source', '')
+        nc_write_attribute(ncfile, vn, 'units', '1')
+        nc_write_attribute(ncfile, vn, 'lod', 2)
+        var_3d = np.zeros((max_nz, cfg.domain.ny, cfg.domain.nx), dtype=np.int)
+
+        verbose('Pull info from server, max height')
+        sqltext = 'SELECT b.nz FROM "{0}"."{1}" AS g ' \
+                  'LEFT OUTER JOIN "{0}"."{2}" AS b ON b.id = g.id ' \
+                  'ORDER BY g.j, g.i' \
+                  .format(cfg.domain.case_schema, cfg.tables.grid, cfg.tables.buildings_grid)
+        cur.execute(sqltext)
+        sql_debug(connection)
+        res = cur.fetchall()
+        sql_debug(connection)
+        res = [0 if x[0] is None else x[0] for x in res]
+        var_top = np.reshape(np.asarray([x for x in res], dtype=vt), (cfg.domain.ny, cfg.domain.nx))
+        var_top = np.nan_to_num(var_top, copy=False, nan=cfg.fill_values[vt],
+                                posinf=cfg.fill_values[vt], neginf=cfg.fill_values[vt])
+        del res
+
+        verbose('Pull info from server, bottom height')
+        sqltext = 'SELECT CASE WHEN b.is_bridge OR b.has_bottom THEN b.nz_min ELSE 0 END FROM "{0}"."{1}" AS g ' \
+                  'LEFT OUTER JOIN "{0}"."{2}" AS b ON b.id = g.id ' \
+                  'ORDER BY g.j, g.i' \
+            .format(cfg.domain.case_schema, cfg.tables.grid, cfg.tables.buildings_grid)
+        cur.execute(sqltext)
+        sql_debug(connection)
+        res = cur.fetchall()
+        sql_debug(connection)
+        res = [0 if x[0] is None else x[0] for x in res]
+        var_bottom = np.reshape(np.asarray([x for x in res], dtype=vt), (cfg.domain.ny, cfg.domain.nx))
+        var_bottom = np.nan_to_num(var_bottom, copy=False, nan=cfg.fill_values[vt],
+                                   posinf=cfg.fill_values[vt], neginf=cfg.fill_values[vt])
+        del res
+
+        verbose('Prepare 3d array with boolean information about topo')
+        for j in range(cfg.domain.ny):
+            for i in range(cfg.domain.nx):
+                var_3d[var_bottom[j, i] + 1:var_top[j, i] + 1, j, i] = 1
+        var_3d[0, :, :] = var_3d[1, :, :]
+
+        verbose('A check for buildings bottoms')
+        sqltext = 'SELECT CASE WHEN (b.is_bridge OR b.has_bottom) AND b.nz = 0 THEN True ELSE False END FROM "{0}"."{1}" g ' \
+                  'LEFT OUTER JOIN "{0}"."{2}" b on b.id = g.id ' \
+                  'ORDER BY g.j, g.i' \
+            .format(cfg.domain.case_schema, cfg.tables.grid, cfg.tables.buildings_grid)
+        cur.execute(sqltext)
+        sql_debug(connection)
+        res = cur.fetchall()
+        sql_debug(connection)
+        res = [cfg.fill_values[vt] if x[0] is None else x[0] for x in res]
+        var_bottom = np.reshape(np.asarray([x for x in res], dtype=np.bool), (cfg.domain.ny, cfg.domain.nx))
+        del res
+
+        for j in range(cfg.domain.ny):
+            for i in range(cfg.domain.nx):
+                if var_bottom[j, i]:
+                    var_3d[0, j, i] = 1
+
+        ncfile.variables[vn][:] = var_3d
+
+        debug('Variable buildings 3d has been written')
+
+        debug('Process types under buildings 3d')
+        sqltext = 'SELECT ub.j, ub.i, ux.typed FROM "{0}"."{1}" AS ub ' \
+                  'LEFT OUTER JOIN "{0}"."{2}" AS ux ON ux.gid = ub.lid_extra ' \
+                  'WHERE ub.under ' \
+                  'ORDER BY ub.j, ub.i ' \
+            .format(cfg.domain.case_schema, cfg.tables.buildings_grid, cfg.tables.extras_shp)
+        cur.execute(sqltext)
+        sql_debug(connection)
+        res = cur.fetchall()
+        for j, i, typeu in res:
+            extra_verbose('Updating [j,i] = [{},{}]', j, i)
+            if cfg.type_range.pavement_min < typeu < cfg.type_range.pavement_max:
+                # pavement type
+                vn = 'pavement_type'
+                extra_verbose('\tIt is pavement type, add [i,j] into pavement_type')
+                ncfile.variables[vn][j, i] = typeu - cfg.type_range.pavement_min
+                vn = "soil_type"
+                ncfile.variables[vn][j, i] = cfg.ground.soil_type_default
+
+            elif cfg.type_range.vegetation_min < typeu < cfg.type_range.vegetation_max:
+                # vegetation type
+                vn = 'vegetation_type'
+                extra_verbose('\tIt is vegetation type, add [i,j] into vegetation_type')
+                ncfile.variables[vn][j, i] = typeu - cfg.type_range.vegetation_min
+                vn = "soil_type"
+                ncfile.variables[vn][j, i] = cfg.ground.soil_type_default
+
+            elif cfg.type_range.water_min < typeu < cfg.type_range.water_max:
+                # water type
+                vn = 'water_type'
+                extra_verbose('\tIt is water type, add [i,j] into water type')
+                ncfile.variables[vn][j, i] = typeu - cfg.type_range.water_min
+
+            else:
+                warning('During filling types under 3d structure. In [i,j] = [{},{}] is unknown type = {}',
+                        i, j, typeu)
+
+        # FIXME: NOT IMPLEMENTED IN PALM
+        # # pavement pars
+        # if cfg.landcover_params_var:
+        #     # Process pavement_pars
+        #     vn = "pavement_pars"
+        #     vt = 'f4'
+        #     for par in cfg.pavement_pars._settings.keys():
+        #         sqltext = 'SELECT br.j, br.i, {0} ' \
+        #                   'from "{1}"."{2}" br    ' \
+        #                   'left outer join "{1}"."{3}" l on l.lid = br.lid and l.typed >= %s and l.typed < %s ' \
+        #                   'left outer join "{1}"."{4}" p on p.code = l."{5}" ' \
+        #                   'WHERE br.under ' \
+        #                   'order by br.j, br.i ' \
+        #             .format(cfg.pavement_pars[par], cfg.domain.case_schema, cfg.tables.bridge_grid,
+        #                     cfg.tables.bridge_shp,   cfg.tables.surface_params,
+        #                     cfg.landcover_params_var+'d')
+        #         cur.execute(sqltext, (cfg.type_range.pavement_min, cfg.type_range.pavement_max,))
+        #         res = cur.fetchall()
+        #         sql_debug(connection)
+        #         for j, i, ty in res:
+        #             extra_verbose('Updating {} in [j,i] = [{},{}], instead of {} write {}',
+        #                           vn, j, i, ncfile.variables[vn][par, j, i], ty)
+        #             ncfile.variables[vn][par, j, i] = ty
+        #     connection.commit()
+        #     debug_sql(connection)
+
+
 def write_trees_grid(ncfile, cfg, connection, cur):
     """ Routine to generate trees """
     change_log_level(cfg.logs.level_trees)
