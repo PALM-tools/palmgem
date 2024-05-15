@@ -93,7 +93,7 @@ vtabs = copy_vectors_from_input(grid_ext, cfg, connection, cur)
 progress('Coping and transforming data from inputs, raster data')
 rtabs = copy_rasters_from_input(grid_ext, cfg, connection, cur)
 
-check_buildings(cfg, connection, cur, rtabs, grid_ext)
+check_buildings(cfg, connection, cur, rtabs, vtabs, grid_ext)
 
 if cfg.do_cct and cfg.tables.buildings_height in rtabs: # and not cfg.slanted_pars.create_slanted_mask:
     debug('Cut cell topo, Modifying landcover, simplified buildings')

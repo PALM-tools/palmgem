@@ -11,3 +11,6 @@ Illustration of the topography representation in a Cartesian framework. The thic
 
 Example visualization of cut cell topology representation of Reichtag, Berlin. 256m x 256m in 1m resolution. \
 <img src="figures/reichstag.png" alt="image" width="600" height="auto">
+
+## Data processing
+Detailed description of data processing can be found in upcomming publication.
