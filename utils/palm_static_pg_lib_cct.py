@@ -395,8 +395,9 @@ def preprocess_building_landcover(cfg, connection, cur):
     """ join adjacent buildings, using Convex/Concave Hull postgis function """
     progress('Starting preprocessing building landcover')
     if cfg.has_3d_buildings:
-        warning('Cut cell topography cannot be run with 3d buildings')
+        warning('Cut cell topography cannot be run with 3d buildings and LOD 2')
         cfg._settings['has_3d_buildings'] = False
+        cfg._settings['lod2'] = False
 
     # JOIN ON DISTANCE SHORTEN THEN max_dist
     debug('Joining tables polygons when distance is lower that set max_dist')

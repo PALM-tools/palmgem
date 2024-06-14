@@ -52,6 +52,8 @@ debug('Domain resolution (dx,dy,dz):({},{},{})', cfg.domain.dx, cfg.domain.dy, c
 # calculate origin of the domain (not multiplied)
 origin_x = cfg.domain.cent_x - cfg.domain.nx * cfg.domain.dx / 2.0
 origin_y = cfg.domain.cent_y - cfg.domain.ny * cfg.domain.dy / 2.0
+cfg.domain._settings['origin_x'] = origin_x
+cfg.domain._settings['origin_y'] = origin_y
 debug('Domain centre (x,y):({},{}) and origin (x,y):({},{})', cfg.domain.cent_x, cfg.domain.cent_y, origin_x, origin_y)
 
 # create connection to the postgresql server
@@ -93,6 +95,8 @@ vtabs = copy_vectors_from_input(grid_ext, cfg, connection, cur)
 progress('Coping and transforming data from inputs, raster data')
 rtabs = copy_rasters_from_input(grid_ext, cfg, connection, cur)
 
+check_surface_params(cfg, connection, cur)
+
 check_buildings(cfg, connection, cur, rtabs, vtabs, grid_ext)
 
 if cfg.do_cct and cfg.tables.buildings_height in rtabs: # and not cfg.slanted_pars.create_slanted_mask:
@@ -117,6 +121,11 @@ fill_missing_holes_in_grid(cfg, connection, cur)
 
 progress('Processing building elevation model BEM')
 connect_buildings_height(cfg, connection, cur)
+
+if cfg.lod2:
+    progress('Connection building roofs')
+    connect_roofs(cfg, connection, cur)
+    connect_walls(cfg, connection, cur, vtabs)
 
 if cfg.force_cyclic:
     update_force_cyclic(cfg, connection, cur)
@@ -158,8 +167,12 @@ write_vegetation(ncfile, cfg, connection, cur)
 progress('Writing soil type')
 write_soil(ncfile, cfg, connection, cur)
 
-progress('Writing terrain type')
+progress('Writing buildings type')
 write_buildings(ncfile, cfg, connection, cur)
+if cfg.lod2:
+    write_building_pars(ncfile, cfg, connection, cur)
+    write_building_surface_pars(ncfile, cfg, connection, cur, vtabs)
+    write_albedo_pars(ncfile, cfg, connection, cur)
 
 if cfg.has_trees:
     progress('Writing lad, bad')

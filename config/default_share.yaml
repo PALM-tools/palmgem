@@ -29,6 +29,7 @@ logs:
     level_check_consistency: -1
     level_landcover: -1
     level_trees: -1
+    level_build_walls: -1
     
 visual_check:
     enabled: True

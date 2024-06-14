@@ -34,7 +34,7 @@ def check_consistency(ncfile, cfg):
                 missing_values, pavement_type_default)
         extra_verbose('Missing grid: {}', np.where(mask))
 
-    if cfg.has_buildings_3d:
+    if cfg.has_3d_buildings:
         mask_3d = np.logical_and(
                           np.logical_and(~ncfile.variables['building_id'][:].mask,
                                          ncfile.variables['buildings_3d'][0, :, :] == 0),  # is 3d structure with empty bottom
@@ -64,6 +64,352 @@ def check_consistency(ncfile, cfg):
     pt = ncfile.variables['soil_type'][:, :]
     pt[mask] = soil_type_default
     ncfile.variables['soil_type'][:, :] = pt
+
+
+    # check pavement and subpavement pars
+    if 'pavement_pars' in ncfile.variables.keys():
+        mask = np.logical_and(~ncfile.variables['pavement_pars'][2, :, :].mask, ncfile.variables['pavement_pars'][0, :, :].mask)
+        missing_pavements = np.sum(mask)
+        if missing_pavements:
+            warning('In some places, pavement_pars is not defined, while subpavement pars are. '
+                    'Double check katland and type (especially condition katland=99 and type<900')
+            debug('Correct the issue masking all those values in pavement_pars and pavement_subpars')
+            verbose('Problematic grid points: {}', np.argwhere(mask).tolist())
+            for idx in np.argwhere(mask):
+                j,i = idx[0], idx[1]
+                extra_verbose('\tCorrection [j,i]=[{},{}]', j,i)
+                for ivar in range(cfg.ndims.npavement_pars):
+                    ncfile.variables['pavement_pars'][ivar, j,i] = cfg.fill_values.f4
+                for ivar in range(cfg.ndims.npavement_subsurface_pars):
+                    for idepth in range(cfg.ndims.nsoil_pars):
+                        ncfile.variables['pavement_subsurface_pars'][ivar, idepth, j,i] = cfg.fill_values.f4
+
+
+    # check whether there is nan value and identify min, max, mean ... and save it into pandas - csv file
+    # pd_log = pd.DataFrame(columns=['variable', 'subvariable', 'npars', 'zsize', 'ysize', 'xsize',
+    #                                'min_val', 'minloc_z', 'minloc_y', 'minloc_x',
+    #                                'max_val', 'maxloc_z', 'maxloc_y', 'maxloc_x',
+    #                                'in_bounds',
+    #                                'mean_val', 'stdev',
+    #                                'has_NaN', 'n_NaNs', 'nanloc_z', 'nanloc_y', 'nanloc_x'])
+
+    for var in ncfile.variables.keys():
+        verbose('Checking: {}', var)
+        if var + '_bounds' in cfg._settings:
+            verbose('{} has bounds defined in config file ', var)
+            has_bound = True
+        else:
+            has_bound = False
+
+    # for var in vars_to_check:
+        nc_var = ncfile.variables[var]
+        if len(nc_var.shape) == 1:
+            nsize = nc_var.size
+            vals = np.asarray(nc_var[:])
+            min_val = np.min(vals)
+            max_val = np.max(vals)
+            min_locs = np.squeeze(np.where(vals == np.min(vals)))
+            if min_locs.size > 1:
+                min_locs = min_locs[0]
+            max_locs = np.squeeze(np.where(vals == np.max(vals)))
+            if max_locs.size > 1:
+                max_locs = max_locs[0]
+            mean_val = np.mean(vals)
+            stdev_val= np.std(vals)
+
+            # checking and finding nans
+            nan_vals = np.isnan(vals)
+            if np.any(nan_vals):
+                # there are some nan vals
+                nan_val = True
+                n_nans = np.sum(nan_vals)
+                nan_locs = np.squeeze(np.where(nan_vals))
+                if nan_locs.size > 1:
+                    nan_locs = nan_locs[0]
+                nan_loc = [np.NaN, np.NaN, nan_locs]
+            else:
+                # No NaNs
+                nan_val = False
+                n_nans = 0
+                nan_loc = [np.NaN, np.NaN, np.NaN]
+
+            # pd_log = pd_log.append({'variable': var, 'subvariable': var, 'npars': 1, 'zsize': 1, 'ysize': 1, 'xsize': nsize,
+            #                         'min_val': min_val, 'minloc_z': np.NaN, 'minloc_y': np.NaN, 'minloc_x': min_locs,
+            #                         'max_val': max_val, 'maxloc_z': np.NaN, 'maxloc_y': np.NaN, 'maxloc_x': max_locs,
+            #                         'mean_val': mean_val, 'stdev': stdev_val,
+            #                         'in_bounds': '--',
+            #                         'has_NaN': nan_val, 'n_NaNs': n_nans,
+            #                         'nanloc_z': nan_loc[0], 'nanloc_y': nan_loc[1], 'nanloc_x': nan_loc[2]
+            #                         },
+            #                         ignore_index=True)
+
+        elif len(nc_var.shape) == 2:
+            if 'y' == nc_var.dimensions[0] and 'x' == nc_var.dimensions[1]:
+                # y, x is there
+                ysize, xsize = nc_var.shape
+                vals = np.asarray(nc_var[...])
+                mask = nc_var[...].mask
+                vals = np.ma.masked_array(vals, mask)
+                min_val = np.min(vals)
+                max_val = np.max(vals)
+                min_locs = np.squeeze(np.where(vals == np.min(vals)))
+                if min_locs.size > 2:
+                    if len(min_locs.shape) == 1:
+                        min_locs = min_locs[0]
+                    elif len(min_locs.shape) > 1:
+                        min_locs = min_locs[:, 0]
+                max_locs = np.squeeze(np.where(vals == np.max(vals)))
+                if max_locs.size > 2:
+                    if len(max_locs.shape) == 1:
+                        max_locs = max_locs[0]
+                    elif len(max_locs.shape) > 1:
+                        max_locs = max_locs[:, 0]
+                mean_val = np.mean(vals)
+                stdev_val = np.std(vals)
+
+                # checking and finding nans
+                nan_vals = np.isnan(vals)
+                if np.any(nan_vals):
+                    # there are some nan vals
+                    nan_val = True
+                    n_nans = np.sum(nan_vals)
+                    nan_locs = np.squeeze(np.where(nan_vals))
+                    if nan_locs.size > 1:
+                        nan_locs = nan_locs[:,0]
+                    nan_loc = [np.NaN, nan_locs[0], nan_locs[1]]
+                else:
+                    # No NaNs
+                    nan_val = False
+                    n_nans = 0
+                    nan_loc = [np.NaN, np.NaN, np.NaN]
+
+                # pd_log = pd_log.append(
+                #     {'variable': var, 'subvariable': var+'xy', 'npars': 1, 'zsize': 1, 'ysize': ysize, 'xsize': xsize,
+                #      'min_val': min_val, 'minloc_z': np.NaN, 'minloc_y': min_locs[0], 'minloc_x': min_locs[1],
+                #      'max_val': max_val, 'maxloc_z': np.NaN, 'maxloc_y': max_locs[0], 'maxloc_x': max_locs[1],
+                #      'mean_val': mean_val, 'stdev': stdev_val,
+                #      'in_bounds': '--',
+                #      'has_NaN': nan_val, 'n_NaNs': n_nans,
+                #      'nanloc_z': nan_loc[0], 'nanloc_y': nan_loc[1], 'nanloc_x': nan_loc[2]
+                #      },
+                #     ignore_index=True)
+            else:
+                # there is npars and ns, iterate through
+                npars, nsize = nc_var.shape
+                for ipar in range(npars):
+                    if has_bound:
+                        subvar = cfg[var+'_bounds'][ipar][2]
+                        max_bound = cfg[var+'_bounds'][ipar][1]*1.0
+                        min_bound = cfg[var+'_bounds'][ipar][0]*1.0
+                    else:
+                        subvar = var
+                        max_bound = np.inf
+                        min_bound = np.NINF
+                    vals = np.asarray(nc_var[ipar,:])
+                    mask = nc_var[ipar, :].mask
+                    vals = np.ma.masked_array(vals, mask)
+                    min_val = np.min(vals)
+                    max_val = np.max(vals)
+                    min_locs = np.squeeze(np.where(vals == np.min(vals)))
+                    if min_locs.size > 1:
+                        min_locs = min_locs[0]
+                    max_locs = np.squeeze(np.where(vals == np.max(vals)))
+                    if max_locs.size > 1:
+                        max_locs = max_locs[0]
+                    mean_val = np.mean(vals)
+                    stdev_val = np.std(vals)
+
+                    # checking and finding nans
+                    nan_vals = np.isnan(vals)
+                    if np.any(nan_vals):
+                        # there are some nan vals
+                        nan_val = True
+                        n_nans = np.sum(nan_vals)
+                        nan_locs = np.squeeze(np.where(nan_vals))
+                        if nan_locs.size > 1:
+                            nan_locs = nan_locs[0]
+                        nan_loc = [np.NaN, np.NaN, nan_locs]
+                    else:
+                        # No NaNs
+                        nan_val = False
+                        n_nans = 0
+                        nan_loc = [np.NaN, np.NaN, np.NaN]
+
+                    # check bounds
+                    if has_bound:
+                        if min_val >= min_bound and max_val <= max_bound:
+                            is_bound = 'in bounds'  # Is in bounds
+                        elif np.ma.is_masked(min_val) or np.ma.is_masked(max_val):
+                            is_bound = 'filled with default'  # Filled with default
+                        else:
+                            is_bound = 'NOT IN BOUNDS'  # Not in bounds
+                            warning('In var {}.{} some values are not in bounds. Bounds: <{},{}>, Values: <{},{}>',
+                                 var, subvar, min_bound, max_bound, min_val, max_val)
+                    else:
+                        is_bound = '--'
+
+                    # pd_log = pd_log.append(
+                    #     {'variable': var, 'subvariable': subvar, 'npars': npars, 'zsize': 1, 'ysize': ysize,
+                    #      'xsize': xsize,
+                    #      'min_val': min_val, 'minloc_z': np.NaN, 'minloc_y': np.NaN, 'minloc_x': min_locs,
+                    #      'max_val': max_val, 'maxloc_z': np.NaN, 'maxloc_y': np.NaN, 'maxloc_x': max_locs,
+                    #      'mean_val': mean_val, 'stdev': stdev_val,
+                    #      'in_bounds': is_bound,
+                    #      'has_NaN': nan_val, 'n_NaNs': n_nans,
+                    #      'nanloc_z': nan_loc[0], 'nanloc_y': nan_loc[1], 'nanloc_x': nan_loc[2]
+                    #      },
+                    #     ignore_index=True)
+
+        elif len(nc_var.shape) == 3 and var not in 'buildings_3d':
+            npars, ysize, xsize = nc_var.shape
+            for ipar in range(npars):
+                if has_bound:
+                    subvar = cfg[var + '_bounds'][ipar][2]
+                    max_bound = cfg[var + '_bounds'][ipar][1]
+                    min_bound = cfg[var + '_bounds'][ipar][0]
+                else:
+                    subvar = var
+                    max_bound = np.inf
+                    min_bound = np.NINF
+                vals = np.asarray(nc_var[ipar, ...])
+                mask = nc_var[ipar,...].mask
+                vals = np.ma.masked_array(vals, mask)
+                min_val = np.min(vals)
+                max_val = np.max(vals)
+                min_locs = np.squeeze(np.where(vals == np.min(vals)))
+                if min_locs.size > 2:
+                    if len(min_locs.shape) == 1:
+                        min_locs = min_locs[0]
+                    elif len(min_locs.shape) > 1:
+                        min_locs = min_locs[:,0]
+                max_locs = np.squeeze(np.where(vals == np.max(vals)))
+                if max_locs.size > 2:
+                    if len(max_locs.shape) == 1:
+                        max_locs = max_locs[0]
+                    elif len(max_locs.shape) > 1:
+                        max_locs = max_locs[:, 0]
+                mean_val = np.mean(vals)
+                stdev_val = np.std(vals)
+
+                # checking and finding nans
+                nan_vals = np.isnan(vals)
+                if np.any(nan_vals):
+                    # there are some nan vals
+                    nan_val = True
+                    n_nans = np.sum(nan_vals)
+                    nan_locs = np.squeeze(np.where(nan_vals))
+                    if nan_locs.size > 1:
+                        nan_locs = nan_locs[:,0]
+                    nan_loc = [np.NaN, nan_locs[0], nan_locs[1]]
+                else:
+                    # No NaNs
+                    nan_val = False
+                    n_nans = 0
+                    nan_loc = [np.NaN, np.NaN, np.NaN]
+
+                # check bounds
+                if has_bound:
+                    if min_val >= min_bound and max_val <= max_bound:
+                        is_bound = 'in bounds'  # Is in bounds
+                    elif np.ma.is_masked(min_val) or np.ma.is_masked(max_val):
+                        is_bound = 'filled with default'  # Filled with default
+                    else:
+                        is_bound = 'NOT IN BOUNDS'  # Not in bounds
+                        warning('In var {}.{} some values are not in bounds. Bounds: <{},{}>, Values: <{},{}>',
+                             var, subvar, min_bound, max_bound, min_val, max_val)
+                else:
+                    is_bound = '--'
+
+                # pd_log = pd_log.append(
+                #     {'variable': var, 'subvariable': subvar, 'npars': npars, 'zsize': 1, 'ysize': ysize,
+                #      'xsize': xsize,
+                #      'min_val': min_val, 'minloc_z': np.NaN, 'minloc_y': min_locs[0], 'minloc_x': min_locs[1],
+                #      'max_val': max_val, 'maxloc_z': np.NaN, 'maxloc_y': max_locs[0], 'maxloc_x': max_locs[1],
+                #      'mean_val': mean_val, 'stdev': stdev_val,
+                #      'in_bounds': is_bound,
+                #      'has_NaN': nan_val, 'n_NaNs': n_nans,
+                #      'nanloc_z': nan_loc[0], 'nanloc_y': nan_loc[1], 'nanloc_x': nan_loc[2]
+                #      },
+                #     ignore_index=True)
+
+        elif len(nc_var.shape) == 4:
+            npars, zsize, ysize, xsize = nc_var.shape  #NOTE zsize is either zsoil, or z
+            for ipar in range(npars):
+                if has_bound:
+                    subvar = cfg[var + '_bounds'][ipar][2]
+                    max_bound = cfg[var + '_bounds'][ipar][1]
+                    min_bound = cfg[var + '_bounds'][ipar][0]
+                else:
+                    subvar = ipar
+                    max_bound = np.inf
+                    min_bound = np.NINF
+                vals = np.asarray(nc_var[ipar, ...])
+                mask = nc_var[ipar,...].mask
+                vals = np.ma.masked_array(vals, mask)
+                min_val = np.min(vals)
+                max_val = np.max(vals)
+                min_locs = np.squeeze(np.where(vals == np.min(vals)))
+                if min_locs.size > 3:
+                    if len(min_locs.shape) == 1:
+                        min_locs = min_locs[0]
+                    elif len(min_locs.shape) > 1:
+                        min_locs = min_locs[:,0]
+                max_locs = np.squeeze(np.where(vals == np.max(vals)))
+                if max_locs.size > 1:
+                    if len(max_locs.shape) == 1:
+                        max_locs = max_locs[0]
+                    elif len(max_locs.shape) > 1:
+                        max_locs = max_locs[:, 0]
+                mean_val = np.mean(vals)
+                stdev_val = np.std(vals)
+
+                # checking and finding nans
+                nan_vals = np.isnan(vals)
+                if np.any(nan_vals):
+                    # there are some nan vals
+                    nan_val = True
+                    n_nans = np.sum(nan_vals)
+                    nan_locs = np.squeeze(np.where(nan_vals))
+                    if nan_locs.size > 1:
+                        nan_locs = nan_locs[:,0]
+                    nan_loc = [nan_locs[0], nan_locs[1], nan_locs[2]]
+                else:
+                    # No NaNs
+                    nan_val = False
+                    n_nans = 0
+                    nan_loc = [np.NaN, np.NaN, np.NaN]
+
+                # check bounds
+                if has_bound:
+                    if min_val >= min_bound and max_val <= max_bound:
+                        is_bound = 'in bounds'  # Is in bounds
+                    elif np.ma.is_masked(min_val) or np.ma.is_masked(max_val):
+                        is_bound = 'filled with default'  # Filled with default
+                    else:
+                        is_bound = 'NOT IN BOUNDS'  # Not in bounds
+                        warning('In var {}.{} some values are not in bounds. Bounds: <{},{}>, Values: <{},{}>',
+                             var, subvar, min_bound, max_bound, min_val, max_val)
+                else:
+                    is_bound = '--'
+
+                # pd_log = pd_log.append(
+                #     {'variable': var, 'subvariable': subvar, 'npars': npars, 'zsize': 1, 'ysize': ysize,
+                #      'xsize': xsize,
+                #      'min_val': min_val, 'minloc_z': min_locs[0], 'minloc_y': min_locs[1], 'minloc_x': min_locs[2],
+                #      'max_val': max_val, 'maxloc_z': max_locs[0], 'maxloc_y': max_locs[1], 'maxloc_x': max_locs[2],
+                #      'mean_val': mean_val, 'stdev': stdev_val,
+                #      'in_bounds': is_bound,
+                #      'has_NaN': nan_val, 'n_NaNs': n_nans,
+                #      'nanloc_z': nan_loc[0], 'nanloc_y': nan_loc[1], 'nanloc_x': nan_loc[2]
+                #      },
+                #     ignore_index=True)
+    # pd_log.to_csv(os.path.join(cfg.visual_check.path, csv_name+'_static_check.csv'), index=False,
+    #                 header=['variable', 'subvariable', 'npars', 'zsize', 'ysize', 'xsize',
+    #                                'min_val', 'minloc_z', 'minloc_y', 'minloc_x',
+    #                                'max_val', 'maxloc_z', 'maxloc_y', 'maxloc_x',
+    #                                'in_bounds',
+    #                                'mean_val', 'stdev',
+    #                                'has_NaN', 'n_NaNs', 'nanloc_z', 'nanloc_y', 'nanloc_x'])
 
     return ncfile
 

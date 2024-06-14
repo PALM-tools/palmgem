@@ -26,6 +26,7 @@ The main run of static driver generator with its configuration is documented her
 [Tutorial](docs/visuallization.md) how to connection PostgreSQL database with QGIS application and enable interactive visualization.
 Brief description of cut cell topography - slanted faces is documented here: [cut cell topography](docs/cut_cell_topo.md) \
 Buildings 3D, Brief description of processing of buildings 3d are shown [HERE](docs/buildings_3d.md)
+LOD2 input for detailed parameterization of surfaces is documented [HERE](docs/lod2.md)
 
 ## Contributing / Support
 If you wish to use your own dataset with more detailed parameterization, please contact us. We will gladly help with implementation.
