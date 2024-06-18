@@ -1,0 +1,5 @@
+# Example of LOD2 input data, Prague city center testcase
+As an example of LOD2 input data, we choose part of Prague city center domain (Prague, Czech Republic). Dataset include detailed DEM raster in 1m resolution, building elevation raster model in 1m resolution. Furtherḿore, shapefiles with landcover, roofs and walls with detailed parameterization. Also, we include inputs for detailed 3D buildings raster extras and shapefile extras_shp (it includes one bridge). Shapefile trees includes detailed information about trees. Table with physical constants for detailed parameterization is also included in example folder (surface_params.csv).\
+[Import script](import_pgsql_prague_lod2.sh) is included, only connection to database must be configured. \
+[Configuration](prague_lod2.yaml) for running scenario is also prepared. Only connection to postgreSQL database must be specified. \
+For running the case, import inputs into database, copy configuration into config folder and run according to documentation. 

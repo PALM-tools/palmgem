@@ -35,19 +35,19 @@ psql -d $db -c "create schema if not exists \"$schema\"" >> ${log_file} 2>&1
 psql -d $db -c "alter schema \"$schema\" owner to ${owner}" >> ${log_file} 2>&1
 
 # vector layers
-vshapes=('name_of_UrbanAtlas_shapefile.shp' 'name_of_OpenStreetMap_shapefile.shp')
-vlayers=('imported_landcover' 'imported_streetmap')
+vshapes=('landcover.shp' 'roofs.shp' 'walls.shp' 'trees.shp' 'extras_shp.shp')
+vlayers=('landcover' 'roofs' 'walls' 'trees' 'extras_shp')
 
 # raster layers
-rshapes=('Name_of_BuildingsHeights_raster.tif' 'name_of_EU_DEM_raster.tif')
-rlayers=('imported_buildings' 'imported_dem')
+rshapes=('buildings.tif' 'dem.tif' 'extras.tif')
+rlayers=('buildings' 'dem' 'extras')
 
 # surface params
-surface_params='name_of_surface_params_file.csv'
+surface_params='surface_params.csv'
 sp_key='code'
 sp_values=('albedo' 'emissivity' 'roughness' 'roughness_h' 'capacity_surf' 'conductivity_surf' 'thicknes' 'capacity_volume' 'conductivity_volume')
 sp_desc=('surface' 'storage')
-sp_header=false
+sp_header=true
 
 # copy vector layers
 for i in ${!vlayers[*]}; do

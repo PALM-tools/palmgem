@@ -1,5 +1,5 @@
 # LOD2 description
-More advanced parametrization is available using lod2 switch. It has several mandatory extensions in inputs data. Items bellow show all mandatory items. Furthermore, we include description for all items. Moreover, there is a small example of input data from Dejvice simulation domain. 
+More advanced parametrization is available using lod2 switch. It has several mandatory extensions in inputs data. Items bellow show all mandatory items. Furthermore, we include description for all items. Moreover, there is a small example of input data from Prague simulation domain, a brief [description](../examples/prague_lod2/prague_lod2.md). 
 ### Surface parameters
 Table containing physical parameters of user defined surfaces. In folder examples/dejvice/files, we introduce our surface_params table in .csv format that is using import.sh script imported into PostgreSQL table. Attributes with brief description is: 
 * code: unique index

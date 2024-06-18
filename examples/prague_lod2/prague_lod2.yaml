@@ -1,0 +1,35 @@
+pg_user: 'pg_user'
+pg_password: 'pg_password'
+database: 'database_name'
+pg_owner: 'owner_name'
+
+visual_check:
+    enabled: True
+    show_plots: False
+
+input_schema: 'inputs_prague_lod2'
+
+domain:
+    name: 'prague'
+    scenario: 'lod2'
+    parent_domain_schema: ''
+    dx: 1.0
+    dy: 1.0
+    dz: 1.0
+    nx: 500
+    ny: 400
+    cent_x: 460198.0
+    cent_y: 5546223.0
+    
+origin_time: '2024-01-01 00:00:00'
+
+logs:
+    level: 1
+    
+# assign water body temperature according to landcover type
+water_pars_temp:   # thermodynamic temperature
+    1: 275.65 # Shore, lakes
+    2: 275.65 # River
+    3: 275.65 # Open sea
+    4: 275.65 # Pond
+    5: 275.65 # Fountain

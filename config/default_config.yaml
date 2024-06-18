@@ -25,7 +25,7 @@ domain:
     parent_domain_schema: ''
     dx: 10.0
     dy: 10.0
-    dz: 10.0
+    dz: -1.0
     nx: 128
     ny: 128
     cent_x: 459180
