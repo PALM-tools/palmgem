@@ -41,6 +41,7 @@ We have prepared several example testcases \
 [Prague testcase](examples/prague/README.md) \
 [Brno testcase](examples/brno/README.md) \
 [Bergen testcase](examples/bergen/README.md)
+[Prague lod2](examples/prague_lod2/prague_lod2.md)
 
 ## Benchmark
 | Domain | Size [km x km] | Grid size | Time [h] |
@@ -64,6 +65,7 @@ We have prepared several example testcases \
 | Berlin | 1.280 x 1.280 | 256 x 256 | 123 [s] |
 | Berlin | 2.560 x 2.560 | 512 x 512 | 30 [min] |
 | Berlin | 4.000 x 4.000 | 800 x 800 | 67 [min] |
+| Prague lod2 | 0.5 x 0.4 | 500 x 400 | 6 [min] |
 
 ## Example static driver
 |                                                       |                  Grid cell type                  |                 Terrain height                  |                 Buiding height                 |
@@ -74,7 +76,7 @@ We have prepared several example testcases \
 |   Bergen <br> 10 240 x 10 240 m <br> 10m resolution   |    ![Bergen](./docs/figures/FigXX_Bergen.png)    | ![Bergen](./docs/figures/FigXX_Bergen_DEM.png)  |                       .                        |
 
 ## Project status & Future versions
-Currently, we are able to produce PALM's static driver for most of the larger cities in EU. We have developed (in testing branch: cut-cell-topo) an extension for cut cell topography (link to PALM CCT or article). The cut cell tool is under development, but the version is working in most cases. There is an extension under development that would process finer geospatial datasets into PALM finer parametrization (vegetation pars, building pars, building surface pars, etc.). This extension would also process individual trees location into LAD (leaf area density) variable. Examples of this extensions can be found: cite our work. The extension will be soon part of main branch in PALM-GEM.
+Currently, we are able to produce PALM's static driver for most of the larger cities in EU. We have developed (in testing branch: cut-cell-topo) an extension for cut cell topography (link to PALM CCT or article). The cut cell tool is under development, but the version is working in most cases. There is an extension that process finer geospatial datasets into PALM finer parametrization (vegetation pars, building pars, building surface pars, etc.). Also individual trees location are processed into LAD (leaf area density) variable. Examples of this extensions can be found: cite our work.
 
 ## License
 PALM-GeM is distributed under the GNU GPL v3+ license (see the `LICENSE` file).
