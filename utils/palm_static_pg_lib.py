@@ -321,7 +321,7 @@ def copy_rasters_from_input(grid_ext, cfg, connection, cur):
             rtabs.append(rel)
         else:
             error('Table {} does not exist in input schema', rel)
-            exit(1)
+            continue
 
         debug('Transform srid of input {} and limit it to grid', rel)
         # drop table if exists
@@ -428,13 +428,14 @@ def check_buildings(cfg, connection, cur, rtabs, vtabs, grid_ext):
 
     debug('Check if buildings grid will be defined in more that 3 grid cells')
     # TODO: join with nearest adjacent landcover
-    sqltext = 'UPDATE "{0}"."{1}" AS l SET type = 202 ' \
-              'WHERE type >= {2} AND ST_Area(geom) < {3}'\
-              .format(cfg.domain.case_schema, cfg.tables.landcover, cfg.type_range.building_min,
-                      3.0 ** 2 * cfg.domain.dx ** 2 )
-    cur.execute(sqltext)
-    sql_debug(connection)
-    connection.commit()
+    if cfg.crop_small_buildings:
+        sqltext = 'UPDATE "{0}"."{1}" AS l SET type = 202 ' \
+                  'WHERE type >= {2} AND ST_Area(geom) < {3}'\
+                  .format(cfg.domain.case_schema, cfg.tables.landcover, cfg.type_range.building_min,
+                          cfg.small_buildings_area * cfg.domain.dx ** 2 )
+        cur.execute(sqltext)
+        sql_debug(connection)
+        connection.commit()
 
     verbose('Checking if buildings (type >= 900) are present in landover')
     sqltext = 'SELECT COUNT(*) FROM "{0}"."{1}" WHERE type BETWEEN {2} AND {3}'\
@@ -962,57 +963,62 @@ def connect_buildings_height(cfg, connection, cur):
 
     # connect raster height with building_heights grid
     # alternatively "where ST_Intersects(bp.geom, bg.geom)" instead of "where ST_Within(bp.geom, bg.geom)"
-    debug('Updating building_grids heights from buildings raster')
-    sqltext = 'update "{0}"."{1}" as bg ' \
-              ' set height = ( select val from ( ' \
-              ' select (ST_PixelAsPoints(b.rast)).geom as geom, (ST_PixelAsPoints(b.rast)).val as val ' \
-              ' from "{0}"."{2}" b where ST_intersects(b.rast,  bg.geom) ) bp ' \
-              ' where ST_Intersects(bp.geom, bg.geom) ' \
-              ' order by ST_Distance(bp.geom, ST_SetSRID(ST_Point(bg.xcen,bg.ycen), %s)) ' \
-              ' limit 1 ) where bg.height is null or bg.height = 0'\
-              .format(cfg.domain.case_schema, cfg.tables.buildings_grid, cfg.tables.buildings_height)
-    cur.execute(sqltext, (cfg.srid_palm,))
-    sql_debug(connection)
-    connection.commit()
+    cur.execute('SELECT EXISTS(SELECT * FROM information_schema.tables '
+                'WHERE table_schema=%s and table_name=%s)',
+                (cfg.domain.case_schema, cfg.tables.buildings_height,))
+    rel_exists = cur.fetchone()[0]
+    if rel_exists:
+        debug('Updating building_grids heights from buildings raster')
+        sqltext = 'update "{0}"."{1}" as bg ' \
+                  ' set height = ( select val from ( ' \
+                  ' select (ST_PixelAsPoints(b.rast)).geom as geom, (ST_PixelAsPoints(b.rast)).val as val ' \
+                  ' from "{0}"."{2}" b where ST_intersects(b.rast,  bg.geom) ) bp ' \
+                  ' where ST_Intersects(bp.geom, bg.geom) ' \
+                  ' order by ST_Distance(bp.geom, ST_SetSRID(ST_Point(bg.xcen,bg.ycen), %s)) ' \
+                  ' limit 1 ) where bg.height is null or bg.height = 0'\
+                  .format(cfg.domain.case_schema, cfg.tables.buildings_grid, cfg.tables.buildings_height)
+        cur.execute(sqltext, (cfg.srid_palm,))
+        sql_debug(connection)
+        connection.commit()
 
-    # fill missing heights by the value from the nearest filled gridpoint of the same building
-    debug('Filling missing heights')
-    sqltext = 'update "{0}"."{1}" as bg ' \
-              ' set height = (' \
-              '  select bn.height from "{0}"."{2}" as bn ' \
-              '   where bn.lid = bg.lid and (bn.height != 0 or (bn.height is not null and bn.height != 0))' \
-              '   order by ST_Distance(ST_SetSrid(ST_Point(bn.xcen,bn.ycen), %s), ' \
-              '                        ST_SetSrid(ST_Point(bg.xcen,bg.ycen), %s)) ' \
-              '   limit 1 ) ' \
-              ' where bg.height is null or bg.height = 0'\
-              .format(cfg.domain.case_schema, cfg.tables.buildings_grid, cfg.tables.buildings_grid)
-    cur.execute(sqltext, (cfg.srid_palm, cfg.srid_palm, ))
-    sql_debug(connection)
-    connection.commit()
+        # fill missing heights by the value from the nearest filled gridpoint of the same building
+        debug('Filling missing heights')
+        sqltext = 'update "{0}"."{1}" as bg ' \
+                  ' set height = (' \
+                  '  select bn.height from "{0}"."{2}" as bn ' \
+                  '   where bn.lid = bg.lid and (bn.height != 0 or (bn.height is not null and bn.height != 0))' \
+                  '   order by ST_Distance(ST_SetSrid(ST_Point(bn.xcen,bn.ycen), %s), ' \
+                  '                        ST_SetSrid(ST_Point(bg.xcen,bg.ycen), %s)) ' \
+                  '   limit 1 ) ' \
+                  ' where bg.height is null or bg.height = 0'\
+                  .format(cfg.domain.case_schema, cfg.tables.buildings_grid, cfg.tables.buildings_grid)
+        cur.execute(sqltext, (cfg.srid_palm, cfg.srid_palm, ))
+        sql_debug(connection)
+        connection.commit()
 
-    # fill remaining missing heights by the value from the nearest filled gridpoint of any building to some distance
-    debug('Fill remaining heights')
-    sqltext2 = 'update "{0}"."{1}" as bg ' \
-              ' set height = (' \
-              '  select bn.height from "{0}"."{2}" as bn ' \
-              '   where (bn.height != 0 or (bn.height is not null and bn.height != 0)) and ' \
-              '         ST_Distance(ST_SetSrid(ST_Point(bn.xcen,bn.ycen), %s), ' \
-              '                     ST_SetSrid(ST_Point(bg.xcen,bg.ycen), %s)) <= %s ' \
-              '   order by ST_Distance(ST_SetSrid(ST_Point(bn.xcen,bn.ycen), %s), ' \
-              '                        ST_SetSrid(ST_Point(bg.xcen,bg.ycen), %s)) ' \
-              '   limit 1 ) ' \
-              ' where bg.height is null or bg.height = 0 '\
-              .format(cfg.domain.case_schema, cfg.tables.buildings_grid, cfg.tables.buildings_grid)
-    cur.execute(sqltext2, (cfg.srid_palm, cfg.srid_palm, cfg.maxbuildingdisance, cfg.srid_palm, cfg.srid_palm, ))
-    sql_debug(connection)
-    connection.commit()
+        # fill remaining missing heights by the value from the nearest filled gridpoint of any building to some distance
+        debug('Fill remaining heights')
+        sqltext2 = 'update "{0}"."{1}" as bg ' \
+                  ' set height = (' \
+                  '  select bn.height from "{0}"."{2}" as bn ' \
+                  '   where (bn.height != 0 or (bn.height is not null and bn.height != 0)) and ' \
+                  '         ST_Distance(ST_SetSrid(ST_Point(bn.xcen,bn.ycen), %s), ' \
+                  '                     ST_SetSrid(ST_Point(bg.xcen,bg.ycen), %s)) <= %s ' \
+                  '   order by ST_Distance(ST_SetSrid(ST_Point(bn.xcen,bn.ycen), %s), ' \
+                  '                        ST_SetSrid(ST_Point(bg.xcen,bg.ycen), %s)) ' \
+                  '   limit 1 ) ' \
+                  ' where bg.height is null or bg.height = 0 '\
+                  .format(cfg.domain.case_schema, cfg.tables.buildings_grid, cfg.tables.buildings_grid)
+        cur.execute(sqltext2, (cfg.srid_palm, cfg.srid_palm, cfg.maxbuildingdisance, cfg.srid_palm, cfg.srid_palm, ))
+        sql_debug(connection)
+        connection.commit()
 
-    # repeat once more filling of missing heights by the value
-    # from the nearest filled gridpoint of the same building (to complete the buildings filled in previous step)
-    verbose('Do it one more to fill grid points')
-    cur.execute(sqltext, (cfg.srid_palm, cfg.srid_palm, ))
-    sql_debug(connection)
-    connection.commit()
+        # repeat once more filling of missing heights by the value
+        # from the nearest filled gridpoint of the same building (to complete the buildings filled in previous step)
+        verbose('Do it one more to fill grid points')
+        cur.execute(sqltext, (cfg.srid_palm, cfg.srid_palm, ))
+        sql_debug(connection)
+        connection.commit()
 
     # # fill remain with default height
     # sqltext = 'UPDATE "{0}"."{1}" SET height = {2} WHERE height IS NULL OR height = 0.0'.format(

@@ -112,12 +112,13 @@ calculate_origin_z_oro_min(cfg, connection, cur)
 progress('Connect landcover to grid')
 connect_landcover_grid(cfg, connection, cur)
 
-progress('Fill cortyards smaller than {} grid cells', cfg.cortyard_fill.count)
 if cfg.cortyard_fill.apply:
+    progress('Fill cortyards smaller than {} grid cells', cfg.cortyard_fill.count)
     fill_cortyard(cfg, connection, cur)
 
-progress('Filling missing building holes')
-fill_missing_holes_in_grid(cfg, connection, cur)
+if cfg.fill_missing_holes:
+    progress('Filling missing building holes')
+    fill_missing_holes_in_grid(cfg, connection, cur)
 
 progress('Processing building elevation model BEM')
 connect_buildings_height(cfg, connection, cur)
@@ -170,6 +171,7 @@ write_soil(ncfile, cfg, connection, cur)
 progress('Writing buildings type')
 write_buildings(ncfile, cfg, connection, cur)
 if cfg.lod2:
+    test_building_insulation(cfg, connection, cur)
     write_building_pars(ncfile, cfg, connection, cur)
     write_building_surface_pars(ncfile, cfg, connection, cur, vtabs)
     write_albedo_pars(ncfile, cfg, connection, cur)

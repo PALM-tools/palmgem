@@ -112,6 +112,8 @@ slanted_pars:
     dist2edge_filter: 0.6
     wall_build_height_max_dist: 2.0
     
+fill_missing_holes: True
+
 cortyard_fill:
     apply: False
     count: 30
@@ -123,8 +125,10 @@ topo_fill_v2:
 force_lsm_only: False
 force_cyclic: False
 force_cyclic_nc: 4
-force_building_boundary: True
+force_building_boundary: False
 force_building_boundary_dist: 3 # distance in grid points, real distance =* dx
+crop_small_buildings: False  # In case of slanted faces
+small_buildings_area: 20 # Area in grid points
 
 trees:
     lad_reduction: 1.0    # coefficient for reduction of LAD in winter
