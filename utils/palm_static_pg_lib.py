@@ -380,8 +380,15 @@ def check_surface_params(cfg, connection, cur):
                 'WHERE table_schema=%s and table_name=%s)',
                 (cfg.input_schema, cfg.tables.surface_params,))
     rel_exists = cur.fetchone()[0]
-    if rel_exists:
-        progress('Surface params detected in Input Schema, apply LOD2 routines')
+
+    cur.execute('SELECT EXISTS('
+                ' SELECT column_name '
+                ' FROM information_schema.columns '
+                ' WHERE table_schema=%s AND table_name=%s AND column_name=%s)',
+                (cfg.input_schema, cfg.tables.landcover, cfg.landcover_params_var,))
+    rel_exists_katland = cur.fetchone()[0]
+    if rel_exists and rel_exists_katland:
+        progress('Surface params and katland parameter in landcover detected in Input Schema, apply LOD2 routines')
         cfg._settings['has_surface_params'] = True
         sqltext = 'CREATE TABLE "{}"."{}" (LIKE "{}"."{}" INCLUDING ALL)' \
             .format(cfg.domain.case_schema, cfg.tables.surface_params, cfg.input_schema, cfg.tables.surface_params)
