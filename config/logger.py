@@ -160,7 +160,7 @@ def logging_level(cfg):
     logging_level_wr(cfg.logs.level, cfg.logs.path)
 
 def logging_level_wr(level, path):
-    logging.basicConfig(level=level,
+    logging.basicConfig(level=int(level),
                         format=Log_Format,
                         datefmt='%Y-%m-%d %H:%M:%S',
                         style='{',

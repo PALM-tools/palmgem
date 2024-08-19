@@ -273,6 +273,99 @@ def write_pavements(ncfile, cfg, connection, cur):
                                var_name=vn, par_id='', text_id='pavement_type', path=cfg.visual_check.path,
                                show_plots=cfg.visual_check.show_plots)
 
+    if cfg.lod2:
+        # Process pavement_pars
+        vn = "pavement_pars"
+        vt = 'f4'
+        ncfile.createVariable(vn, vt, ('npavement_pars', 'y', 'x'), fill_value=cfg.fill_values[vt])
+        nc_write_attribute(ncfile, vn, 'long_name', 'pavement parameters')
+        nc_write_attribute(ncfile, vn, 'units', '')
+        nc_write_attribute(ncfile, vn, 'res_orig', cfg.domain.dz)
+        nc_write_attribute(ncfile, vn, 'coordinates', 'E_UTM N_UTM lon lat')
+        nc_write_attribute(ncfile, vn, 'grid_mapping', 'E_UTM N_UTM lon lat')
+        # fill individual parameters in dimension npavement_pars
+        for par in cfg.pavement_pars._settings.keys():
+            # par - index of npars dimmension in netcdf
+            # pavement_pars[par] - calculation formula for parameter
+            sqltext = 'SELECT case when l.type is not null then {0} else null end ' \
+                      'from "{1}"."{2}" g    ' \
+                      'left outer join "{1}"."{3}" l on l.lid = g.lid and l.type >= %s and l.type < %s ' \
+                      'left outer join "{1}"."{4}" p on p.code = l."{5}" ' \
+                      'order by g.j, g.i' \
+                .format(cfg.pavement_pars[par], cfg.domain.case_schema, cfg.tables.grid,
+                        cfg.tables.landcover,   cfg.tables.surface_params,
+                        cfg.landcover_params_var)
+            cur.execute(sqltext, (cfg.type_range.pavement_min, cfg.type_range.pavement_max,))
+            res = cur.fetchall()
+            sql_debug(connection)
+            res = [cfg.fill_values[vt] if x[0] is None else x[0] for x in res]
+            var = np.reshape(np.asarray(res, dtype=vt), (cfg.domain.ny, cfg.domain.nx))
+            del res
+            var = np.nan_to_num(var, copy=False,
+                                nan=cfg.fill_values[vt], posinf=cfg.fill_values[vt], neginf=cfg.fill_values[vt])
+            ncfile.variables[vn][par,...] = var
+            debug('Variable {} parameter {} written.', vn, par)
+
+            if cfg.visual_check.enabled:
+                variable_visualization(var=ncfile[vn][par, ...],
+                                       x=np.asarray(ncfile.variables['x']), y=np.asarray(ncfile.variables['y']),
+                                       var_name=vn, par_id=par, text_id='pavement_pars', path=cfg.visual_check.path,
+                                       show_plots = cfg.visual_check.show_plots)
+
+        # Process pavement_subsurface_pars
+        # create zsoil dimenzion
+        vn = 'zsoil'
+        nc_create_dimension(ncfile, vn, cfg.ground.nzsoil)
+        temp = ncfile.createVariable(vn, 'f4', vn)
+        zs = np.zeros(cfg.ground.nzsoil)
+        zs[0] = cfg.ground.dz_soil[0]
+        for i in range(1,cfg.ground.nzsoil):
+            zs[i] = zs[i-1] + cfg.ground.dz_soil[i]
+
+        temp[...] = zs
+        # create and fill pavement_subsurface_pars
+        vn = 'pavement_subsurface_pars'
+        vt = 'f4'
+        var = ncfile.createVariable(vn, vt, ('npavement_subsurface_pars', 'zsoil', 'y', 'x'),
+                                    fill_value=cfg.fill_values[vt])
+        nc_write_attribute(ncfile, vn, 'long_name', 'pavement subsurface parameters')
+        nc_write_attribute(ncfile, vn, 'units', '')
+        nc_write_attribute(ncfile, vn, 'res_orig', cfg.domain.dz)
+        nc_write_attribute(ncfile, vn, 'coordinates', 'E_UTM N_UTM lon lat')
+        nc_write_attribute(ncfile, vn, 'grid_mapping', 'E_UTM N_UTM lon lat')
+        # assignment of the upper and lower layers of pavement
+        lrange = [range(0, cfg.ground.nzsoil_surface), range(cfg.ground.nzsoil_surface, cfg.ground.nzsoil)]
+        # fill individual parameters in dimension npavement_subsurface_pars
+        for par in cfg.pavement_subsurface_pars._settings.keys():
+            # par - index of npars dimmension in netcdf
+            # pavement_subsurface_pars[par] - calculation formula for parameters of upper and lower layers
+            for k in range(0, 2):
+                # 0 - param for upper layers, 1 - param for lower layers
+                sqltext = 'SELECT case when l.type is not null then {0} else null end ' \
+                          'from "{1}"."{2}" g    ' \
+                          'left outer join "{1}"."{3}" l on l.lid = g.lid and l.type >= %s and l.type < %s ' \
+                          'left outer join "{1}"."{4}" p on p.code = l."{5}" ' \
+                          'order by g.j, g.i' \
+                    .format(cfg.pavement_subsurface_pars[par][k], cfg.domain.case_schema, cfg.tables.grid,
+                            cfg.tables.landcover, cfg.tables.surface_params, cfg.landcover_params_var)
+                cur.execute(sqltext, (cfg.type_range.pavement_min, cfg.type_range.pavement_max,))
+
+                res = cur.fetchall()
+                sql_debug(connection)
+                varp = np.reshape(np.asarray([x[0] for x in res], dtype=vt), (cfg.domain.ny, cfg.domain.nx))
+                del res
+                varp = np.nan_to_num(varp, copy=False, nan=cfg.fill_values[vt],
+                                     posinf=cfg.fill_values[vt], neginf=cfg.fill_values[vt])
+                # fill parameter for corresponding soil layers
+                for p in lrange[k]:
+                    var[par, p, :, :] = varp
+                    if cfg.visual_check.enabled:
+                        variable_visualization(var=var[par, p, :, :],
+                                               x=np.asarray(ncfile.variables['x']), y=np.asarray(ncfile.variables['y']),
+                                               var_name=vn, par_id=par, text_id='par: {}, k: {}, p: {}'.format(par,k, p),
+                                               path=cfg.visual_check.path, show_plots = cfg.visual_check.show_plots)
+            debug('Variable {}, parameter {} written', vn, par)
+
 def write_water(ncfile, cfg, connection, cur):
     # write water surfaces
     vn = "water_type"
@@ -330,6 +423,36 @@ def write_water(ncfile, cfg, connection, cur):
                                var_name=vn, par_id=0, text_id='water_pars', path=cfg.visual_check.path,
                                show_plots = cfg.visual_check.show_plots)
 
+    if cfg.lod2:
+        # Process water_pars
+        for par in cfg.water_pars._settings.keys():
+            # par - index of npars dimmension in netcdf
+            # pavement_pars[par] - calculation formula for parameter
+            sqltext = 'SELECT case when l.type is not null then {0} else null end ' \
+                       'from "{1}"."{2}" g    ' \
+                      'left outer join "{1}"."{3}" l on l.lid = g.lid and l.type >= %s and l.type < %s ' \
+                      'left outer join "{1}"."{4}" p on p.code = l."{5}" ' \
+                      'order by g.j, g.i' \
+                .format(cfg.water_pars[par], cfg.domain.case_schema, cfg.tables.grid,
+                        cfg.tables.landcover, cfg.tables.surface_params, cfg.landcover_params_var)
+            cur.execute(sqltext, (cfg.type_range.water_min, cfg.type_range.water_max,))
+            res = cur.fetchall()
+            sql_debug(connection)
+            res = [cfg.fill_values[vt] if x[0] is None else x[0] for x in res]
+            var = np.reshape(np.asarray(res, dtype=vt), (cfg.domain.ny, cfg.domain.nx))
+            del res
+            var = np.nan_to_num(var, copy=False, nan=cfg.fill_values[vt],
+                                posinf=cfg.fill_values[vt], neginf=cfg.fill_values[vt])
+            ncfile.variables[vn][par,...] = var
+            debug('Variable {}, parameter {} written.', vn, par)
+            if cfg.visual_check.enabled:
+                variable_visualization(var=ncfile.variables[vn][par,...],
+                                       x=np.asarray(ncfile.variables['x']), y=np.asarray(ncfile.variables['y']),
+                                       var_name=vn, par_id=par, text_id='water_pars', path=cfg.visual_check.path,
+                                       show_plots = cfg.visual_check.show_plots)
+
+
+
 def write_vegetation(ncfile, cfg, connection, cur):
     # write vegetation surfaces
     vn = "vegetation_type"
@@ -345,6 +468,45 @@ def write_vegetation(ncfile, cfg, connection, cur):
                                x=np.asarray(ncfile.variables['x']), y=np.asarray(ncfile.variables['y']),
                                var_name=vn, par_id='', text_id='vegetation_type', path=cfg.visual_check.path,
                                show_plots = cfg.visual_check.show_plots)
+
+    if cfg.lod2:
+        # Process vegetation_pars
+        vn = "vegetation_pars"
+        vt = 'f4'
+        ncfile.createVariable(vn, vt, ('nvegetation_pars', 'y', 'x'), fill_value=cfg.fill_values[vt])
+        nc_write_attribute(ncfile, vn, 'long_name', 'vegetation parameters')
+        nc_write_attribute(ncfile, vn, 'units', '1')
+        nc_write_attribute(ncfile, vn, 'source', '')
+        nc_write_attribute(ncfile, vn, 'res_orig', cfg.domain.dz)
+        nc_write_attribute(ncfile, vn, 'coordinates', 'E_UTM N_UTM lon lat')
+        nc_write_attribute(ncfile, vn, 'grid_mapping', 'E_UTM N_UTM lon lat')
+        # fill individual parameters in dimension npavement_pars
+
+        for par in cfg.vegetation_pars._settings.keys():
+            # par - index of npars dimmension in netcdf
+            # pavement_pars[par] - calculation formula for parameter
+            sqltext = 'SELECT case when l.type is not null then {0} else null end from "{1}"."{2}" g    ' \
+                      'left outer join "{1}"."{3}" l on l.lid = g.lid and l.type >= %s and l.type < %s ' \
+                      'left outer join "{1}"."{4}" p on p.code = l."{5}" ' \
+                      'order by g.j, g.i' \
+                .format(cfg.vegetation_pars[par], cfg.domain.case_schema, cfg.tables.grid,
+                        cfg.tables.landcover, cfg.tables.surface_params,
+                        cfg.landcover_params_var)
+            cur.execute(sqltext, (cfg.type_range.vegetation_min, cfg.type_range.vegetation_max,))
+            res = cur.fetchall()
+            sql_debug(connection)
+            res = [cfg.fill_values[vt] if x[0] is None else x[0] for x in res]
+            var = np.reshape(np.asarray(res, dtype=vt), (cfg.domain.ny, cfg.domain.nx))
+            del res
+            var = np.nan_to_num(var, copy=False, nan=cfg.fill_values[vt],
+                                posinf=cfg.fill_values[vt], neginf=cfg.fill_values[vt])
+            ncfile.variables[vn][par, ...] = var
+            debug('Variable {}, parameter {} written', vn, par)
+            if cfg.visual_check.enabled:
+                variable_visualization(var=ncfile.variables[vn][par, ...],
+                                       x=np.asarray(ncfile.variables['x']), y=np.asarray(ncfile.variables['y']),
+                                       var_name=vn, par_id=par, text_id='vegetation_pars', path=cfg.visual_check.path,
+                                       show_plots = cfg.visual_check.show_plots)
 
 def write_soil(ncfile, cfg, connection, cur):
     # write soil type for vegetation surfaces
@@ -631,3 +793,380 @@ def write_trees_grid(ncfile, cfg, connection, cur):
                                    x=np.asarray(ncfile.variables['x']), y=np.asarray(ncfile.variables['y']),
                                    var_name='bad', par_id=k, text_id='trunk_area_density', path=cfg.visual_check.path,
                                    show_plots=cfg.visual_check.show_plots)
+
+def write_building_pars(ncfile, cfg, connection, cur):
+    # write building_pars - roof parameters
+    vn = 'building_pars'
+    vt = 'f4'
+    ncfile.createVariable(vn, vt, ('nbuilding_pars', 'y', 'x'), fill_value=cfg.fill_values[vt])
+    nc_write_attribute(ncfile, vn, 'long_name', 'building parameters')
+    nc_write_attribute(ncfile, vn, 'units', '')
+    nc_write_attribute(ncfile, vn, 'res_orig', cfg.domain.dz)
+    nc_write_attribute(ncfile, vn, 'coordinates', 'E_UTM N_UTM lon lat')
+    nc_write_attribute(ncfile, vn, 'grid_mapping', 'E_UTM N_UTM lon lat')
+    # fill individual parameters in dimension nbuilding_pars
+    for par in cfg.building_pars._settings.keys():
+        extra_verbose('Processing buildings pars, par: {}', par)
+        # par - index of npars dimmension in netcdf
+        # building_pars[par] - calculation formula for parameter
+        # first create calculation formula
+        if par in cfg.building_pars_repl._settings.keys():
+            # parameter replacements for green frac
+            repl = cfg.building_pars_repl[par]
+            g_text = 'case '
+            for gf in repl:
+                g_text = g_text + 'when p.code = {0} then {1} '.format(gf[0], gf[1])
+            g_text = g_text + 'else {0} end '.format(cfg.building_pars[par])
+        else:
+            g_text = '{0} '.format(cfg.building_pars[par])
+        extra_verbose('\t{}', g_text)
+        # If insulation enabled
+        if cfg.insulation.enabled and par in cfg.insulation.building_pars and \
+                cfg.insulation.exists[cfg.insulation.pars_fields[cfg.insulation.building_pars.index(par)]]:
+            # parameter replacements for insulation layers of walls
+            i = cfg.insulation.building_pars.index(par)
+            i_text = 'CASE WHEN "{0}" <> 0 THEN {1} ELSE {2} END '.format(
+                cfg.insulation.fields[cfg.insulation.pars_fields[i]],
+                cfg.insulation.values[cfg.insulation.pars_items[i]], g_text)
+        else:
+            i_text = '{0} '.format(g_text)
+        extra_verbose('\t{}', i_text)
+
+        # calculation formula
+        # TODO: Move into one select, wall and roof are separated in parameters
+        """
+        select distinct on (g.i, g.j) g.j, g.i, b.id as b_id, bw.id as bw_id, 
+            g.id as g_id, w.gid as w_gid, r.gid as r_gid, pr.code as pr_code, pg.code as pg_code, pu.code as pu_code,
+            case when (bw.id is not null OR b.id IS NOT NULL) then 
+            --w.winfrach 
+            pr.capacity_surf
+            else null end  as pr_capacity_surf,
+            case when (bw.id is not null OR b.id IS NOT NULL) then 
+            --w.winfrach 
+            pu.capacity_surf
+            else null end as pu_capacity_surf,
+            case when (bw.id is not null OR b.id IS NOT NULL) then 
+            --w.winfrach 
+            w.emisivitah
+            else null end as w_emisivitah
+        from "evropska_martin_03_validation_summer"."grid" g 
+        left outer join "evropska_martin_03_validation_summer"."building_walls" bw on bw.id = g.id and not bw.isroof 
+        left outer join "evropska_martin_03_validation_summer"."buildings" b on b.id = g.id
+        left outer join "evropska_martin_03_validation_summer"."walls" w on w.gid = bw.wid 
+        left outer join "evropska_martin_03_validation_summer"."roofs" r on r.gid = b.rid 
+        left outer join "evropska_martin_03_validation_summer"."surface_params" pr on pr.code = r.material+200
+        left outer join "evropska_martin_03_validation_summer"."surface_params" pg on pg.code = w.stenakatd 
+        left outer join "evropska_martin_03_validation_summer"."surface_params" pu on pu.code = w.stenakath 
+        order by g.j,g.i
+        limit 100
+        """
+        p_text = 'case when b.id is not null then {0} else null end'.format(i_text)
+        sqltext = 'SELECT DISTINCT ON (g.i, g.j) ' \
+                  '{0} from "{1}"."{2}" g ' \
+                  'left outer join "{1}"."{3}" b on b.id = g.id ' \
+                  'left outer join "{1}"."{4}" r on r.gid = b.rid ' \
+                  'left outer join "{1}"."{7}" p on p.code = cast(r.material as integer)+%s ' \
+                  'left outer join "{1}"."{5}" bw on bw.id = g.id and not bw.isroof ' \
+                  'left outer join "{1}"."{6}" w on w.gid = bw.wid ' \
+                  'left outer join "{1}"."{7}" pg on pg.code = w.stenakatd ' \
+                  'left outer join "{1}"."{7}" pu on pu.code = w.stenakath ' \
+                  'order by g.j,g.i ' \
+            .format(p_text, cfg.domain.case_schema, cfg.tables.grid,
+                    cfg.tables.buildings_grid, cfg.tables.roofs, cfg.tables.building_walls, cfg.tables.walls, cfg.tables.surface_params, )
+        extra_verbose('\t{}', sqltext)
+        cur.execute(sqltext, (cfg.surf_range.roof_min,))
+        res = cur.fetchall()
+        sql_debug(connection)
+        varr = np.reshape(np.asarray([x[0] for x in res], dtype=vt), (cfg.domain.ny, cfg.domain.nx))
+        del res
+        # if par in cfg.building_pars_wall._settings.keys():
+        #     # process also parameter of walls
+        #     # create calculation formula
+        #     if cfg.insulation.enabled and par in cfg.insulation.building_pars and \
+        #        cfg.insulation.exists[cfg.insulation.pars_fields[cfg.insulation.building_pars.index(par)]]:
+        #         # parameter replacements for insulation layers of walls
+        #         i = cfg.insulation.building_pars.index(par)
+        #         i_text = 'case when "{0}" <> 0 then {1} else {2} end '.format(
+        #                  cfg.insulation.fields[cfg.insulation.pars_fields[i]],
+        #                  cfg.insulation.values[cfg.insulation.pars_items[i]], cfg.building_pars_wall[par])
+        #     else:
+        #         i_text = '{0} '.format(cfg.building_pars_wall[par])
+        #     # if par in cfg.building_pars_repl._settings.keys():
+        #     #     # parameter replacements for green frac
+        #     #     repl = cfg.building_pars_repl[par]
+        #     #     g_text = 'case '
+        #     #     for gf in repl:
+        #     #         g_text = g_text + 'when p.code = {0} then {1} '.format(gf[0], gf[1])
+        #     #     i_text = g_text + 'else {0} end '.format(i_text)
+        #
+        #     p_text = 'case when bw.id is not null then {0} else null end '.format(i_text)
+        #     sqltext = 'select distinct on (g.i, g.j) ' \
+        #               '{0} from "{1}"."{2}" g ' \
+        #               'left outer join "{1}"."{3}" bw on bw.id = g.id and not bw.isroof ' \
+        #               'left outer join "{1}"."{4}" w on w.gid = bw.wid ' \
+        #               'left outer join "{1}"."{5}" pg on pg.code = w.stenakatd ' \
+        #               'left outer join "{1}"."{5}" pu on pu.code = w.stenakath ' \
+        #               'order by g.j,g.i ' \
+        #         .format(p_text, cfg.domain.case_schema, cfg.tables.grid, cfg.tables.building_walls,
+        #                 cfg.tables.walls, cfg.tables.surface_params, )
+        #     cur.execute(sqltext)
+        #     res = cur.fetchall()
+        #     sql_debug(connection)
+        #     varw = np.reshape(np.asarray([x[0] for x in res], dtype=vt), (cfg.domain.ny, cfg.domain.nx))
+        #     del res
+        #     # combine the arrays
+        #     varr = np.where(np.isnan(varw), varr, varw)
+        # replace nan with fillValue and save in netcdf file
+        var = np.nan_to_num(varr, copy=False, nan=cfg.fill_values[vt], posinf=cfg.fill_values[vt], neginf=cfg.fill_values[vt])
+        ncfile.variables[vn][par,...] = var
+        debug('Variable {}, parameter {} written.', vn, par)
+        if cfg.visual_check.enabled:
+            variable_visualization(var=ncfile.variables[vn][par,...],
+                                   x=np.asarray(ncfile.variables['x']), y=np.asarray(ncfile.variables['y']),
+                                   var_name=vn, par_id=par, text_id='building_pars', path=cfg.visual_check.path,
+                                   show_plots = cfg.visual_check.show_plots)
+
+    # check winfrac < 0.95 Honza's idea
+    winfrac = np.argwhere(ncfile.variables[vn][1,...] > 0.95)
+    if winfrac.size > 0:
+        verbose('Modifying winfrac in buildings_pars where winfrac > 0.95, '
+                'setting winfrac = 0.95 and wallfrac = 0.05')
+        for j, i in winfrac:
+            ncfile.variables[vn][1, j, i] = 0.95
+            ncfile.variables[vn][0, j, i] = 0.05
+
+    winfrac = np.argwhere(ncfile.variables[vn][22, ...] > 0.95)
+    if winfrac.size > 0:
+        verbose('Modifying winfrac in buildings_pars where winfrac > 0.95, '
+                'setting winfrac = 0.95 and wallfrac = 0.05')
+        for j, i in winfrac:
+            ncfile.variables[vn][22, j, i] = 0.95
+            ncfile.variables[vn][21, j, i] = 0.05
+    del winfrac
+
+
+    debug('Variable {} completely written.', vn)
+
+def test_building_insulation(cfg, connection, cur):
+    # test if columns zatepd and zateph exist in table walls and add the indication to insulation cfg parameters
+    cfg.insulation._settings['exists'] = []
+    for f in cfg.insulation.fields:
+        sqltext = 'select exists (select * from information_schema.columns ' \
+                  'where table_schema = %s and table_name=%s and column_name = %s)'
+        cur.execute(sqltext, (cfg.domain.case_schema, cfg.tables.walls, f,))
+        cfg.insulation.exists.append(cur.fetchone()[0])
+    sql_debug(connection)
+    connection.commit()
+
+def write_building_surface_pars(ncfile, cfg, connection, cur, vtabs):
+    # create dimension s(ns) for indexing of surfaces
+    # acquire max surf_id
+    sqltext = 'SELECT sid FROM "{0}"."{1}" AS s ' \
+              'LEFT OUTER JOIN "{0}"."{2}" AS g ON g.id = s.gid ' \
+              'ORDER BY g.j ASC, g.i ASC, s.direction ASC, s.zs DESC'.format(cfg.domain.case_schema, cfg.tables.surfaces, cfg.tables.grid)
+    cur.execute(sqltext)
+    var = cur.fetchall()
+    sql_debug(connection)
+    ns = len(var)
+    nc_create_dimension(ncfile, 's', ns)
+    temp = nc_create_variable(ncfile, 's', 'i', 's')
+    temp[:] = np.asarray([x[0] for x in var], dtype='i')
+    # create all related variables
+    sqltext = 'SELECT xs, ys, zs, azimuth, zenith, lons, lats, "Es_UTM", "Ns_UTM" FROM "{0}"."{1}" AS s ' \
+              'LEFT OUTER JOIN "{0}"."{2}" AS g ON g.id = s.gid ' \
+              'ORDER BY g.j ASC, g.i ASC, s.direction ASC, s.zs DESC'.format(cfg.domain.case_schema, cfg.tables.surfaces, cfg.tables.grid)
+    cur.execute(sqltext)
+    var = cur.fetchall()
+    sql_debug(connection)
+    vi = ['xs', 'ys', 'zs', 'azimuth', 'zenith', 'lons', 'lats']
+    vt = 'f4'
+    for i in range(len(vi)):
+        nc_create_dimension(ncfile, vi[i], ns)
+        temp = nc_create_variable(ncfile, vi[i], vt, 's')
+        res = [cfg.fill_values[vt] if x[i] is None else x[i] for x in var]
+        temp[:] = np.asarray(res, dtype=vt)
+    vj = ['Es_UTM', 'Ns_UTM']
+    vt = 'f8'
+    i = 0
+    for j in range(len(vi), len(vi)+len(vj)):
+        nc_create_dimension(ncfile, vj[i], ns)
+        temp = nc_create_variable(ncfile, vj[i], vt, 's')
+        res = [cfg.fill_values[vt] if x[j] is None else x[j] for x in var]
+        temp[:] = np.asarray(res, dtype=vt)
+        i += 1
+
+    # write roof and wall surface pars
+    vn = 'building_surface_pars'
+    vt = 'f4'
+    var = nc_create_variable(ncfile, vn, vt, ('nbuilding_surface_pars', 's'), fill_value=cfg.fill_values[vt])
+    nc_write_attribute(ncfile, vn, 'long_name', 'building parameters')
+    nc_write_attribute(ncfile, vn, 'units', '')
+    nc_write_attribute(ncfile, vn, 'res_orig', cfg.domain.dz)
+    nc_write_attribute(ncfile, vn, 'coordinates', 'Es_UTM Ns_UTM lons lats')
+    # fill individual parameters in dimension nbuilding_pars
+    for par in cfg.building_surface_pars._settings.keys():
+        # par - index of npars dimension in netcdf
+        # building_pars[par] - calculation formula for parameter
+
+        # create calculation formula
+        if cfg.tables.extras_shp in vtabs:
+            p = cfg.building_surface_pars[par]
+            if not isinstance(p, list):
+                p = [p, p, p, p, p]
+            pt = ['pr', 'pg', 'pu', 'pd', 'b'] # pr ... roof, pg ... ground, pu ... upper floors, pd ... downward facing, b .. bridges
+            sqlline1 = 'LEFT OUTER JOIN "{0}"."{1}" d on s.eid = d.gid '.format(cfg.domain.case_schema, cfg.tables.extras_shp)
+            sqlline2 = 'LEFT OUTER JOIN "{0}"."{1}" pd on pd.code = d.katlandd '.format(cfg.domain.case_schema, cfg.tables.surface_params)
+            sqlline3 = 'LEFT OUTER JOIN "{0}"."{1}" AS be ON s.eid = be.gid '.format(cfg.domain.case_schema, cfg.tables.extras_shp)
+            sqlline4 = 'LEFT OUTER JOIN "{0}"."{1}" AS b ON b.code = be.katlandu '.format(cfg.domain.case_schema, cfg.tables.surface_params)
+        else:
+            p = cfg.building_surface_pars[par]
+            if not isinstance(p, list):
+                p = [p, p, p]
+            p = p[:3]
+            pt = ['pr', 'pg', 'pu']
+            sqlline1 = ''
+            sqlline2 = ''
+            sqlline3 = ''
+            sqlline4 = ''
+        g_text = {}
+
+        for pk in range(len(p)):  # over roof, ground, upper levels
+            if par in cfg.building_surface_pars_repl._settings.keys():
+                # parameter replacements for green frac
+                repl = cfg.building_surface_pars_repl[par]
+                g_text[pk] = 'case '
+                for gf in repl: # replace keys
+                    g_text[pk] = g_text[pk] + 'when {0}.code = {1} then {2} '.format(pt[pk], gf[0], gf[1])
+                g_text[pk] = g_text[pk] + 'else {0} end '.format(p[pk])
+            else:
+                g_text[pk] = '{0} '.format(p[pk])
+        # test if additional insulation applies
+        if cfg.insulation.enabled and par in cfg.insulation.building_surface_pars:
+            # parameter replacements for insulation layers of walls
+            i = cfg.insulation.building_surface_pars.index(par)
+            for pk in range(1,len(p)): # insulation for walls, not roofs
+                if pk >= 3:
+                    continue # skip downward facing walls
+                if cfg.insulation.exists[pk-1]:  # insulation.exists does not contain roofs
+                    g_text[pk] = 'case when "{0}" <> 0 then {1} else {2} end '.format(cfg.insulation.fields[pk-1],
+                                  cfg.insulation.values[cfg.insulation.surface_pars_items[i]], g_text[pk])
+        # set final calculation formula
+        if cfg.tables.extras_shp in vtabs:
+            p_text = ' case when s.isroof then CASE WHEN s.eid IS NOT NULL THEN {6} ELSE {0} END when not s.isroof and s.ishorizontal then {4} ' \
+                     '  else case when s.zs<={1}+wart.nz_min_art*{5} then {2} else {3} end end ' \
+                     .format(g_text[0], cfg.ground.ground_floor_height, g_text[1], g_text[2], g_text[3], cfg.domain.dz, g_text[4])
+        else:
+            p_text = ' case when s.isroof then {0} ' \
+                     '  else case when s.zs<={1}+wart.nz_min_art*{4} then {2} else {3} end end ' \
+                .format(g_text[0], cfg.ground.ground_floor_height, g_text[1], g_text[2], cfg.domain.dz)
+        # build sql select text # FIXME change r.rid (r.gid)
+        sqltext = 'select {0} from "{1}"."{2}" s ' \
+                  'left outer join "{1}"."{3}" r on r.gid = s.rid ' \
+                  'left outer join "{1}"."{4}" pr on pr.code = cast(r.material as integer) + {7} ' \
+                  'left outer join "{1}"."{5}" w on w.gid = s.wid  ' \
+                  '{8} ' \
+                  '{9} ' \
+                  'left outer join "{1}"."{4}" pg on pg.code = w.stenakatd ' \
+                  'left outer join "{1}"."{4}" pu on pu.code = w.stenakath ' \
+                  '{10} ' \
+                  '{11} ' \
+                  'left outer join "{1}"."{6}" g on g.id = s.gid ' \
+                  'left outer join (SELECT id, direction, nz_min_art FROM "{1}"."{12}" GROUP BY id, direction, nz_min_art) ' \
+                  '     AS wart ON wart.id = g.id AND wart.direction = s.direction ' \
+                  'order by g.j ASC, g.i ASC, s.direction ASC, s.zs DESC' \
+            .format(p_text, cfg.domain.case_schema, cfg.tables.surfaces, cfg.tables.roofs, cfg.tables.surface_params,
+                    cfg.tables.walls, cfg.tables.grid, cfg.surf_range.roof_min, sqlline1, sqlline3, sqlline2, sqlline4, cfg.tables.building_walls)
+        extra_verbose('\t{}', sqltext)
+        cur.execute(sqltext)
+        res = cur.fetchall()
+        sql_debug(connection)
+        varr = np.asarray([x[0] for x in res], dtype=vt)
+        if any(np.isnan(varr)):
+            nans = np.isnan(varr)
+            nans = nans[nans]
+            warning('NaN value(s) in parameter {} in function write_building_surface_pars [{} out of {}, which is {} %]', par, nans.size, ns, nans.size / ns)
+        del res
+        var[par, :] = np.nan_to_num(varr, copy=False, nan=cfg.fill_values[vt],
+                                          posinf=cfg.fill_values[vt], neginf=cfg.fill_values[vt])
+        debug('Variable {}, parameter {} written.', vn, par)
+    # TODO: add vertical surfaces from building_walls to the building_surface_pars
+
+    # check winfrac > 0.95 Honza's idea
+    winfrac = np.argwhere(ncfile.variables[vn][1, :] > 0.95)
+    if winfrac.size > 0:
+        verbose('Modifying winfrac in building_surface_pars where winfrac > 0.95, '
+                'setting winfrac = 0.95 and wallfrac = 0.05')
+        for s_change in winfrac:
+            ncfile.variables[vn][1, s_change] = 0.95
+            ncfile.variables[vn][0, s_change] = 0.05
+    debug('Variable {} completely written.', vn)
+
+
+# write albedo parameters
+def write_albedo_pars(ncfile,cfg, connection, cur):
+    # write albedo_pars - roof parameters
+    vn = 'albedo_pars'
+    vt = 'f4'
+    var = ncfile.createVariable(vn, vt, ('nalbedo_pars', 'y', 'x'), fill_value=cfg.fill_values[vt])
+    nc_write_attribute(ncfile, vn, 'long_name', 'building parameters')
+    nc_write_attribute(ncfile, vn, 'units', '')
+    nc_write_attribute(ncfile, vn, 'res_orig', cfg.domain.dz)
+    nc_write_attribute(ncfile, vn, 'coordinates', 'E_UTM N_UTM lon lat')
+    nc_write_attribute(ncfile, vn, 'grid_mapping', 'E_UTM N_UTM lon lat')
+    # fill individual parameters in dimension nalbedo_pars
+    for par in cfg.albedo_pars._settings.keys():
+        # par - index of npars dimmension in netcdf
+        # albedo_pars[par] - calculation formulas for albedo for land, roof and wall
+        # first check if albedo or emissivity column exists in landcover table
+        sqltext = 'select {0} from "{1}"."{2}" as l limit 1'.format(cfg.albedo_pars[par][0],
+                                                                    cfg.domain.case_schema, cfg.tables.landcover)
+        al4l_exists = True
+        try:
+            cur.execute(sqltext)
+        except Exception:
+            al4l_exists = False
+        if al4l_exists:
+            al4l = cfg.albedo_pars[par][0]
+        else:
+            al4l = 'null'
+        sql_debug(connection)
+        connection.commit()
+        sqltext = 'select case when b.id is null then {0} else {1} end ' \
+                  'from "{2}"."{3}" g ' \
+                  'left outer join "{2}"."{4}" l on l.lid = g.lid ' \
+                  'left outer join "{2}"."{5}" b on b.id = g.id ' \
+                  'left outer join "{2}"."{6}" r on r.gid = b.rid ' \
+                  'order by g.j,g.i '.format(al4l, cfg.albedo_pars[par][1], cfg.domain.case_schema, cfg.tables.grid,
+                                             cfg.tables.landcover, cfg.tables.buildings_grid, cfg.tables.roofs,
+                                             cfg.tables.surface_params, )
+        cur.execute(sqltext)
+        res = cur.fetchall()
+        sql_debug(connection)
+        varr = np.reshape(np.asarray([x[0] for x in res], dtype=vt), (cfg.domain.ny, cfg.domain.nx))
+        del res
+        # process parameter of walls
+        sqltext = 'select distinct on (g.i, g.j) ' \
+                  'case when bw.id is not null then {0} else null end ' \
+                  'from "{1}"."{2}" g ' \
+                  'left outer join "{1}"."{3}" bw on bw.id = g.id and not bw.isroof ' \
+                  'left outer join "{1}"."{4}" w on w.gid = bw.wid ' \
+                  'left outer join "{1}"."{5}" pw on pw.code = w.stenakath ' \
+                  'order by g.j,g.i ' \
+            .format(cfg.albedo_pars[par][2], cfg.domain.case_schema, cfg.tables.grid, cfg.tables.building_walls,
+                    cfg.tables.walls, cfg.tables.surface_params, )
+        cur.execute(sqltext)
+        res = cur.fetchall()
+        sql_debug(connection)
+        varw = np.reshape(np.asarray([x[0] for x in res], dtype=vt), (cfg.domain.ny, cfg.domain.nx))
+        del res
+        # combine the arrays
+        varr = np.where(np.isnan(varw), varr, varw)
+        # replace nan with fillValue and save in netcdf file
+        var[par, :, :] = np.nan_to_num(varr, copy=False, nan=cfg.fill_values[vt], posinf=cfg.fill_values[vt], neginf=cfg.fill_values[vt])
+        debug('Variable {}, parameter {} written.', vn, par)
+        if cfg.visual_check.enabled:
+            variable_visualization(var=var[par, ...],
+                                   x=np.asarray(ncfile.variables['x']), y=np.asarray(ncfile.variables['y']),
+                                   var_name=vn, par_id=par, text_id='albedo_type', path=cfg.visual_check.path,
+                                   show_plots = cfg.visual_check.show_plots)
+    debug('Variable {} completely written.', vn)
