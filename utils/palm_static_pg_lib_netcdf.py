@@ -757,10 +757,6 @@ def write_trees_grid(ncfile, cfg, connection, cur):
             lad[l, j, i] += tree[2 * l + 2]
             bad[l, j, i] += tree[2 * l + 3]
 
-    debug('Crop lad / bad to configured max lad / bad')
-    lad[lad > cfg.trees.max_lad] = cfg.trees.max_lad
-    bad[bad > cfg.trees.max_bad] = cfg.trees.max_bad
-
     debug('create zlad and zbad dimensions')
     zlad = [0] + [x * cfg.domain.dz + 0.5 * cfg.domain.dz for x in range(nzlad)]
     nc_create_dimension(ncfile, 'zlad', nzlad+1)

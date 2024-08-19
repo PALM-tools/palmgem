@@ -136,8 +136,6 @@ trees:
     nhv: 10               # number of discretization layers for calculation of tree vertical shapes
     nump: 10              # number of polygon edges for interpolation of cycles for treetops and tree trunks
     ext_coef: 0.6         # Extinction coefficient (same as in PALM code) for tree crown transmissivity
-    max_lad: 1.6
-    max_bad: 1.6
     
 walls:
     # wall directions (North, East, South, West) direction = [1, 2, 3, 4]
