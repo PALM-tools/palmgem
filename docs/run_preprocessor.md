@@ -13,7 +13,7 @@ FROM EU-DEM website download Open Topo Data https://www.opentopodata.org/dataset
 From UA website https://land.copernicus.eu/local/urban-atlas/building-height-2012?tab=download (with previous created free account) download buildings heights for your specified city. Extract after download, extract zip file inside, copy files from Dataset to your working dir.For simplicity and algorithm speed up, there is an option to use some GIS software to clip dateset before importing into PostgreSQL database. Please see [crop raster in QGIS](user_preproces.md)
 
 ### Data import to PostgreSQL database
-Use prepared shell script in import_to_sql folder import_pgsql.sh to import downloaded data into postgresql database (please check names and paths of the importing files). After successful import you can check imported geodata using QGIS, detailed instruction can be found [here](../../docs/visuallization.md).
+Detailed description how to import shapefiles and raster files is [HERE](import2postgresql.md)
 
 ## Configuration and running preprocessor
 Check default configurations in config folder. Create you configuration in config folder, name_of_case.yaml. Fill in your PostgreSQL database connection, you connection username and password, name of input schema. Specify if you want to crop to user defined extend (see example_preproc.yaml). Then run preprocessing python script 
