@@ -126,16 +126,16 @@ def check_consistency(ncfile, cfg):
                 nan_locs = np.squeeze(np.where(nan_vals))
                 if nan_locs.size > 1:
                     nan_locs = nan_locs[0]
-                nan_loc = [np.NaN, np.NaN, nan_locs]
+                nan_loc = [np.nan, np.nan, nan_locs]
             else:
                 # No NaNs
                 nan_val = False
                 n_nans = 0
-                nan_loc = [np.NaN, np.NaN, np.NaN]
+                nan_loc = [np.nan, np.nan, np.nan]
 
             # pd_log = pd_log.append({'variable': var, 'subvariable': var, 'npars': 1, 'zsize': 1, 'ysize': 1, 'xsize': nsize,
-            #                         'min_val': min_val, 'minloc_z': np.NaN, 'minloc_y': np.NaN, 'minloc_x': min_locs,
-            #                         'max_val': max_val, 'maxloc_z': np.NaN, 'maxloc_y': np.NaN, 'maxloc_x': max_locs,
+            #                         'min_val': min_val, 'minloc_z': np.nan, 'minloc_y': np.nan, 'minloc_x': min_locs,
+            #                         'max_val': max_val, 'maxloc_z': np.nan, 'maxloc_y': np.nan, 'maxloc_x': max_locs,
             #                         'mean_val': mean_val, 'stdev': stdev_val,
             #                         'in_bounds': '--',
             #                         'has_NaN': nan_val, 'n_NaNs': n_nans,
@@ -176,17 +176,17 @@ def check_consistency(ncfile, cfg):
                     nan_locs = np.squeeze(np.where(nan_vals))
                     if nan_locs.size > 1:
                         nan_locs = nan_locs[:,0]
-                    nan_loc = [np.NaN, nan_locs[0], nan_locs[1]]
+                    nan_loc = [np.nan, nan_locs[0], nan_locs[1]]
                 else:
                     # No NaNs
                     nan_val = False
                     n_nans = 0
-                    nan_loc = [np.NaN, np.NaN, np.NaN]
+                    nan_loc = [np.nan, np.nan, np.nan]
 
                 # pd_log = pd_log.append(
                 #     {'variable': var, 'subvariable': var+'xy', 'npars': 1, 'zsize': 1, 'ysize': ysize, 'xsize': xsize,
-                #      'min_val': min_val, 'minloc_z': np.NaN, 'minloc_y': min_locs[0], 'minloc_x': min_locs[1],
-                #      'max_val': max_val, 'maxloc_z': np.NaN, 'maxloc_y': max_locs[0], 'maxloc_x': max_locs[1],
+                #      'min_val': min_val, 'minloc_z': np.nan, 'minloc_y': min_locs[0], 'minloc_x': min_locs[1],
+                #      'max_val': max_val, 'maxloc_z': np.nan, 'maxloc_y': max_locs[0], 'maxloc_x': max_locs[1],
                 #      'mean_val': mean_val, 'stdev': stdev_val,
                 #      'in_bounds': '--',
                 #      'has_NaN': nan_val, 'n_NaNs': n_nans,
@@ -204,7 +204,7 @@ def check_consistency(ncfile, cfg):
                     else:
                         subvar = var
                         max_bound = np.inf
-                        min_bound = np.NINF
+                        min_bound = -np.inf
                     vals = np.asarray(nc_var[ipar,:])
                     mask = nc_var[ipar, :].mask
                     vals = np.ma.masked_array(vals, mask)
@@ -228,12 +228,12 @@ def check_consistency(ncfile, cfg):
                         nan_locs = np.squeeze(np.where(nan_vals))
                         if nan_locs.size > 1:
                             nan_locs = nan_locs[0]
-                        nan_loc = [np.NaN, np.NaN, nan_locs]
+                        nan_loc = [np.nan, np.nan, nan_locs]
                     else:
                         # No NaNs
                         nan_val = False
                         n_nans = 0
-                        nan_loc = [np.NaN, np.NaN, np.NaN]
+                        nan_loc = [np.nan, np.nan, np.nan]
 
                     # check bounds
                     if has_bound:
@@ -251,8 +251,8 @@ def check_consistency(ncfile, cfg):
                     # pd_log = pd_log.append(
                     #     {'variable': var, 'subvariable': subvar, 'npars': npars, 'zsize': 1, 'ysize': ysize,
                     #      'xsize': xsize,
-                    #      'min_val': min_val, 'minloc_z': np.NaN, 'minloc_y': np.NaN, 'minloc_x': min_locs,
-                    #      'max_val': max_val, 'maxloc_z': np.NaN, 'maxloc_y': np.NaN, 'maxloc_x': max_locs,
+                    #      'min_val': min_val, 'minloc_z': np.nan, 'minloc_y': np.nan, 'minloc_x': min_locs,
+                    #      'max_val': max_val, 'maxloc_z': np.nan, 'maxloc_y': np.nan, 'maxloc_x': max_locs,
                     #      'mean_val': mean_val, 'stdev': stdev_val,
                     #      'in_bounds': is_bound,
                     #      'has_NaN': nan_val, 'n_NaNs': n_nans,
@@ -270,7 +270,7 @@ def check_consistency(ncfile, cfg):
                 else:
                     subvar = var
                     max_bound = np.inf
-                    min_bound = np.NINF
+                    min_bound = -np.inf
                 vals = np.asarray(nc_var[ipar, ...])
                 mask = nc_var[ipar,...].mask
                 vals = np.ma.masked_array(vals, mask)
@@ -300,12 +300,12 @@ def check_consistency(ncfile, cfg):
                     nan_locs = np.squeeze(np.where(nan_vals))
                     if nan_locs.size > 1:
                         nan_locs = nan_locs[:,0]
-                    nan_loc = [np.NaN, nan_locs[0], nan_locs[1]]
+                    nan_loc = [np.nan, nan_locs[0], nan_locs[1]]
                 else:
                     # No NaNs
                     nan_val = False
                     n_nans = 0
-                    nan_loc = [np.NaN, np.NaN, np.NaN]
+                    nan_loc = [np.nan, np.nan, np.nan]
 
                 # check bounds
                 if has_bound:
@@ -323,8 +323,8 @@ def check_consistency(ncfile, cfg):
                 # pd_log = pd_log.append(
                 #     {'variable': var, 'subvariable': subvar, 'npars': npars, 'zsize': 1, 'ysize': ysize,
                 #      'xsize': xsize,
-                #      'min_val': min_val, 'minloc_z': np.NaN, 'minloc_y': min_locs[0], 'minloc_x': min_locs[1],
-                #      'max_val': max_val, 'maxloc_z': np.NaN, 'maxloc_y': max_locs[0], 'maxloc_x': max_locs[1],
+                #      'min_val': min_val, 'minloc_z': np.nan, 'minloc_y': min_locs[0], 'minloc_x': min_locs[1],
+                #      'max_val': max_val, 'maxloc_z': np.nan, 'maxloc_y': max_locs[0], 'maxloc_x': max_locs[1],
                 #      'mean_val': mean_val, 'stdev': stdev_val,
                 #      'in_bounds': is_bound,
                 #      'has_NaN': nan_val, 'n_NaNs': n_nans,
@@ -342,7 +342,7 @@ def check_consistency(ncfile, cfg):
                 else:
                     subvar = ipar
                     max_bound = np.inf
-                    min_bound = np.NINF
+                    min_bound = -np.inf
                 vals = np.asarray(nc_var[ipar, ...])
                 mask = nc_var[ipar,...].mask
                 vals = np.ma.masked_array(vals, mask)
@@ -377,7 +377,7 @@ def check_consistency(ncfile, cfg):
                     # No NaNs
                     nan_val = False
                     n_nans = 0
-                    nan_loc = [np.NaN, np.NaN, np.NaN]
+                    nan_loc = [np.nan, np.nan, np.nan]
 
                 # check bounds
                 if has_bound:

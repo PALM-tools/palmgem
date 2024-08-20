@@ -22,6 +22,7 @@ from config.logger import *
 from shapely import wkb
 import platform
 import os
+import sys
 
 def create_schema(cfg, connection, cur):
     """
@@ -121,11 +122,13 @@ def upload_raster(cfg, connection, cur, raster_file, table_name):
     # check the platform
     if platform.system() == "Windows":
         exe_str = '.exe'
+        set_str = 'SET'
     elif platform.system() == "Linux":
         exe_str = ''
+        set_str = 'export'
     else:
         error('Unknown system')
-        exit(1)
+        sys.exit(1)
 
     sqltext = 'DROP TABLE IF EXISTS "{0}"."{1}" CASCADE'.format(cfg.input_schema, table_name)
     cur.execute(sqltext)
@@ -140,13 +143,18 @@ def upload_raster(cfg, connection, cur, raster_file, table_name):
     dbname = cfg.database
     host = cfg.pg_host
     port = cfg.pg_port
-    bin_path = r"{}".format(cfg.bin_path)
+    raster2pgsql_path = os.path.join(r"{}".format(cfg.bin_path), f'raster2pgsql{exe_str}')
+    psql_path         = os.path.join(r"{}".format(cfg.bin_path), f'psql{exe_str}')
+    # bin_path = r"{}".format(cfg.bin_path)
     cmd = f"""
-    set PGPASSWORD={pw}&&SET PATH=%PATH%;{bin_path}&& "raster2pgsql{exe_str}" -I -C -M -t auto "{file_path}" -q "{schema}"."{file_name}" | psql.exe -U {user} -d {dbname} -h {host} -p {port}
+    {set_str} PGPASSWORD={pw} &&  "{raster2pgsql_path}" -I -C -M -t auto "{file_path}" -q "{schema}"."{file_name}" | {psql_path} -U {user} -d {dbname} -h {host} -p {port}
             """
-    debug(cmd)
-    os.system(cmd)
-    debug('\tUpload DONE')
+    try:
+        debug(cmd)
+        os.system(cmd)
+        debug('\tUpload DONE')
+    except:
+        error('Command does not work: {}', cmd)
 
     sqltext = 'ALTER TABLE "{}"."{}" OWNER TO {}'.format(cfg.input_schema, table_name, cfg.pg_owner)
     cur.execute(sqltext)

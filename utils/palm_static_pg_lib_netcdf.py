@@ -946,6 +946,7 @@ def write_building_pars(ncfile, cfg, connection, cur):
 def test_building_insulation(cfg, connection, cur):
     # test if columns zatepd and zateph exist in table walls and add the indication to insulation cfg parameters
     cfg.insulation._settings['exists'] = []
+    debug('testing buildings insulation')
     for f in cfg.insulation.fields:
         sqltext = 'select exists (select * from information_schema.columns ' \
                   'where table_schema = %s and table_name=%s and column_name = %s)'

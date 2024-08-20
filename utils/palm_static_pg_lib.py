@@ -19,6 +19,7 @@
 # PALM-GeM. If not, see <https://www.gnu.org/licenses/>.
 
 import numpy as np
+import sys
 from config.logger import *
 
 def create_fishnet(cfg, connection, cur):
@@ -294,7 +295,7 @@ def copy_vectors_from_input(grid_ext, cfg, connection, cur):
         count = cur.fetchone()[0]
         if count == 0:
             error('There is 0 items in the table: {}, pop, delete this table from case', rel)
-            exit(1)
+            sys.exit(1)
 
     if cfg.tables.trees in vtabs:
         cfg._settings['has_trees'] = True
@@ -370,7 +371,7 @@ def copy_rasters_from_input(grid_ext, cfg, connection, cur):
         count = cur.fetchone()[0]
         if count == 0:
             error('There is 0 items in the table: {}, pop, delete this table from case', rel)
-            exit(1)
+            sys.exit(1)
     return rtabs
 
 def check_surface_params(cfg, connection, cur):

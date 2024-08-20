@@ -24,7 +24,7 @@ from pandas.plotting import table
 from config.config import load_config, cfg
 from argparse import ArgumentParser
 import getpass
-import os
+import sys
 import geopandas as gpd
 
 from config.logger import *
@@ -40,7 +40,7 @@ argp.add_argument('-c', '--config', help='configuration file')
 argv = argp.parse_args()
 
 # TODO: solve default config
-load_config(argv, v=2, cfg_default_path='config/default_import.yaml')
+load_config(argv, cfg_default_path='config/default_import.yaml')
 logging_level(cfg)
 
 progress('Importing file to postgreSQL database, VERSION: python script')
@@ -50,11 +50,17 @@ debug('Config file: {}', argv.config)
 # create connection to the postgresql server
 if cfg.pg_password is None or cfg.pg_password == '':
     pg_password = getpass.getpass()
-connection = psycopg2.connect(database=cfg.database, host=cfg.pg_host,
-                              port=cfg.pg_port, user=cfg.pg_user, password=cfg.pg_password)
-connection.set_client_encoding('UTF8')
-cur = connection.cursor()
-sql_debug(connection)
+
+try:
+    connection = psycopg2.connect(database=cfg.database, host=cfg.pg_host,
+                                  port=cfg.pg_port, user=cfg.pg_user, password=cfg.pg_password)
+    connection.set_client_encoding('UTF8')
+    cur = connection.cursor()
+    sql_debug(connection)
+except:
+    error('Could not connect to PostgreSQL database, please check user credentials')
+    sys.exit()
+
 
 # TODO: move this to .yaml config
 vector_files = {
@@ -130,6 +136,9 @@ for vector_file in vector_files.keys():
 
     columns2copy = check_column(vector_files[vector_file]['columns2copy'], gdf)
     columns2copy += [geom_name]
+
+    # keep only relevant information
+    gdf = gdf[columns2copy]
 
     debug('shp_file: {} \n table_name: {} \n colums2copy: {}', shp_file, table_name, columns2copy)
 
