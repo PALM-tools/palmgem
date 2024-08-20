@@ -81,6 +81,8 @@ declare
     ed double precision;
     tlij double precision;
     lad_real double precision;
+    max_lad_ji double precision;
+    max_bad_ji double precision;
     --tree tree;
     nbad integer;
     nlad integer;
@@ -94,7 +96,6 @@ declare
     tree_coniferous text;
     tree_lad text;
     tree_lad_exists boolean;
-;
 begin
     ret = false;
     -- name of the fiels in tree table
@@ -124,13 +125,13 @@ begin
     if tree_lad_exists then
 	    text1 = format('%I', tree_lad);
 	else
-        text1 = format('case when %I = 1 then ''2.8'' else ''1.6'' end', tree_coniferous);
+        text1 = format('case when %I = 1 then ''1.6'' else ''1.0'' end', tree_coniferous);
 	end if;
     -- formula for calculation of lad reduction - leaf and coniferous tree
     text2 = format('case when %I = ''0'' then %s else 1.0 end', tree_coniferous, lad_reduction);
     -- tree information select
     sqltext = format('select %I, %I, %I, %I, %I, %I, ' || text1 || ', ' || text2 ||
-                     ', (ST_Dump(geom)).geom, ST_X((ST_Dump(geom)).geom), ST_X((ST_Dump(geom)).geom) ' ||
+                     ', (ST_Dump(geom)).geom, ST_X((ST_Dump(geom)).geom), ST_Y((ST_Dump(geom)).geom) ' ||
                      ' from %I.%I',
                      tree_id, tree_height, tree_trunk_height, tree_crown_radius, tree_crown_shape, tree_coniferous,
 					 case_schema, tree_table);
@@ -144,6 +145,9 @@ begin
             raise notice 'tid, th, tb, tr, ts, tc, tl, lad_redt, cx, tcy = %, %, %, %, %, %, %, %, %, %',
                           tid, th, tb, tr, ts, tc, tl, lad_red, tcx, tcy;
         end if;
+
+        max_lad_ji = tl * lad_red;
+        max_bad_ji = tl * coef * bad_coef
 
         -- calculate min and max layer of the tree crown and trunk
         nbad = cast(floor(tb/dz) as integer);
@@ -245,12 +249,12 @@ begin
 
                 text1 = format('lad_%s', l);
                 text2 = format('bad_%s', l);
-                sqltext = format('update %I.%I set %I = %I + $1, %I = %I + $2 where id = $3 ',
+                sqltext = format('update %I.%I set %I = MAX(%I + $1, $4), %I = MAX(%I + $2, $5) where id = $3 ',
                                  case_schema, tree_grid_table, text1, text1, text2, text2);
                 if debug_level < 3 then
                     raise notice 'sqltext: %', sqltext;
                 end if;
-                execute sqltext using lad_real, tl * coef * bad_coef, gid;
+                execute sqltext using lad_real, tl * coef * bad_coef, gid, max_lad_ji, max_bad_ji;
             end loop;
         end loop;
 
