@@ -22,6 +22,7 @@ from config.logger import *
 from shapely import wkb
 import platform
 import os
+import subprocess
 import sys
 
 def create_schema(cfg, connection, cur):
@@ -145,13 +146,15 @@ def upload_raster(cfg, connection, cur, raster_file, table_name):
     port = cfg.pg_port
     raster2pgsql_path = os.path.join(r"{}".format(cfg.bin_path), f'raster2pgsql{exe_str}')
     psql_path         = os.path.join(r"{}".format(cfg.bin_path), f'psql{exe_str}')
-    # bin_path = r"{}".format(cfg.bin_path)
     cmd = f"""
     {set_str} PGPASSWORD={pw} &&  "{raster2pgsql_path}" -I -C -M -t auto "{file_path}" -q "{schema}"."{file_name}" | {psql_path} -U {user} -d {dbname} -h {host} -p {port}
             """
     try:
         debug(cmd)
-        os.system(cmd)
+        process = subprocess.Popen([cmd], shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        for line in iter(process.stdout.readline, b''):  # b'\n'-separated lines
+            debug('{}', line)
+        error(process.stderr)
         debug('\tUpload DONE')
     except:
         error('Command does not work: {}', cmd)

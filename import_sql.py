@@ -77,23 +77,33 @@ vector_files = {
     'landcover': {
         'table_name': 'landcover',
         'file': cfg.upload_files.landcover,
-        'columns2copy': ['lid', 'type']
+        'columns2copy': ['gid', 'lid', 'type', 'katland', 'albedo', 'emisivita']
     },
     'roofs': {
         'table_name': 'roofs',
         'file': cfg.upload_files.roofs,
-        'columns2copy': ['']
+        'columns2copy': ['gid', 'lid', 'katroof', 'material', 'albedo', 'emisivita', 'tloustka', 'rid']
     },
     'walls': {
         'table_name': 'walls',
         'file': cfg.upload_files.walls,
-        'columns2copy': ['']
+        'columns2copy': ['gid', 'lid', 'wid', 'stenakatd', 'stenakath', 'stenacold', 'stenacolh', 'stenaoknad',
+                         'stenaoknah', 'albedod', 'albedoh', 'winfracd', 'winfrach', 'wallfracd',
+                         'wallfrach', 'zatep', ]
     },
     'trees': {
         'table_name': 'trees',
         'file': cfg.upload_files.trees,
-        'columns2copy': ['']
+        'columns2copy': ['gid', 'sid', 'typstr', 'note', 'vysstr', 'vyskmen',
+                         'polokor', 'polokmen', 'tvarkor', 'ladens', ]
     },
+    'extras': {
+        'table_name': 'extras_shp',
+        'file': cfg.upload_files.extras_shp,
+        'columns2copy': ['gid', 'lid', 'katland', 'albedo', 'emisivita', 'type', 'katlandu', 'typeu', 'katlandd',
+                         'typed', 'class3d', 'albedou', 'albedod', 'emissd', 'emise3d',
+                         ]
+    }
 }
 raster_files = {
     'imported_dem': {
