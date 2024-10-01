@@ -3094,7 +3094,7 @@ def merge_walls_terrain(cfg, connection, cur):
 
     if len(i_all) != len(wid):
         error('Number of items in i_all is not the same as in wid')
-        exit(1)
+        sys.exit(1)
 
     # Get all wall coordinates
     debug('Selecting all wall coordinates')
@@ -5338,7 +5338,7 @@ def check_for_vertex_singularities(cfg, connection, cur):
                             ccidx = cidx3
                         else:
                             verbose('Some issues with corner, [{},{},{}], [{},{},{}]', ii[idx], jj[idx], kk[idx], i, j, k)
-                            exit(1)
+                            sys.exit(1)
                         ii_new[ivert] = int(adj_corners[ccidx, 2])
                         jj_new[ivert] = int(adj_corners[ccidx, 1])
                         kk_new[ivert] = int(adj_corners[ccidx, 0])
@@ -5378,7 +5378,7 @@ def check_for_vertex_singularities(cfg, connection, cur):
                             ccidx = cidx3
                         else:
                             verbose('Some issues with corner, [{},{},{}], [{},{},{}]', ii[idx], jj[idx], kk[idx], i, j, k)
-                            exit(1)
+                            sys.exit(1)
                         ii_new[ivert] = int(adj_corners[ccidx, 2])
                         jj_new[ivert] = int(adj_corners[ccidx, 1])
                         kk_new[ivert] = int(adj_corners[ccidx, 0])

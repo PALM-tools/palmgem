@@ -192,3 +192,5 @@ check_consistency(ncfile, cfg)
 ncfile.close()
 debug('File {} was closed', cfg.domain.static_driver_file)
 progress('Generating of static driver was successfully completed')
+
+progress('PALM GEM finished OK')

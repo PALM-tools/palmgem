@@ -150,50 +150,56 @@ if cfg.clean_up:
     connection.commit()
 
 """ DEM BUILDINGS """
-progress('Processing buildings DEM')
-debug('Create new table with transformed coordinates')
-sqltext = 'DROP TABLE IF EXISTS "{0}"."{1}" CASCADE; ' \
-          'CREATE TABLE "{0}"."{1}" AS ' \
-          'SELECT ROW_NUMBER() OVER(ORDER BY t.rast::geometry) AS rid, ' \
-          '       ST_Union(ST_Clip( ST_Transform( r.rast, t.rast), t.rast::geometry ), {3}) AS rast ' \
-          'FROM (SELECT ST_Transform(ST_SetSRID(ST_Extent(rast::geometry), %s), %s) AS geom ' \
-          '      FROM "{0}"."{2}") AS g, ' \
-          'ST_MakeEmptyCoverage(tilewidth => (SELECT (ST_MetaData(rast)).width FROM "{0}"."{2}" LIMIT 1), ' \
-          '                     tileheight => (SELECT (ST_MetaData(rast)).height FROM "{0}"."{2}" LIMIT 1), ' \
-          '                     width => (ST_XMax(g.geom) - ST_XMin(g.geom))::integer,' \
-          '                     height => (ST_YMax(g.geom) - ST_YMin(g.geom))::integer,' \
-          '                     upperleftx => ST_XMin(g.geom), ' \
-          '                     upperlefty => ST_YMax(g.geom), ' \
-          '                     scalex =>  (SELECT (ST_MetaData(rast)).scalex FROM "{0}"."{2}" LIMIT 1),' \
-          '                     scaley => (SELECT (ST_MetaData(rast)).scaley FROM "{0}"."{2}" LIMIT 1),' \
-          '                     skewx => (SELECT (ST_MetaData(rast)).skewx FROM "{0}"."{2}" LIMIT 1), ' \
-          '                     skewy => (SELECT (ST_MetaData(rast)).skewy FROM "{0}"."{2}" LIMIT 1),' \
-          '                     srid => %s) AS t(rast) ' \
-          'INNER JOIN "{0}"."{2}" AS r ON ST_Transform(t.rast::geometry, %s) && r.rast ' \
-          'GROUP BY t.rast;'.format(cfg.domain.case_schema, cfg.tables.buildings, cfg.tables.buildings_or, "'MAX'")
-cur.execute(sqltext, (cfg.dem_srid, cfg.srid, cfg.srid, cfg.dem_srid))
-sql_debug(connection)
-connection.commit()
+debug('Checking buildings raster existence in input schema')
+cur.execute('SELECT EXISTS(SELECT * FROM information_schema.tables '
+            'WHERE table_schema=%s and table_name=%s)',
+            (cfg.domain.case_schema, cfg.tables.buildings,))
+rel_exists = cur.fetchone()[0]
+if rel_exists:
+    progress('Processing buildings DEM')
+    debug('Create new table with transformed coordinates')
+    sqltext = 'DROP TABLE IF EXISTS "{0}"."{1}" CASCADE; ' \
+              'CREATE TABLE "{0}"."{1}" AS ' \
+              'SELECT ROW_NUMBER() OVER(ORDER BY t.rast::geometry) AS rid, ' \
+              '       ST_Union(ST_Clip( ST_Transform( r.rast, t.rast), t.rast::geometry ), {3}) AS rast ' \
+              'FROM (SELECT ST_Transform(ST_SetSRID(ST_Extent(rast::geometry), %s), %s) AS geom ' \
+              '      FROM "{0}"."{2}") AS g, ' \
+              'ST_MakeEmptyCoverage(tilewidth => (SELECT (ST_MetaData(rast)).width FROM "{0}"."{2}" LIMIT 1), ' \
+              '                     tileheight => (SELECT (ST_MetaData(rast)).height FROM "{0}"."{2}" LIMIT 1), ' \
+              '                     width => (ST_XMax(g.geom) - ST_XMin(g.geom))::integer,' \
+              '                     height => (ST_YMax(g.geom) - ST_YMin(g.geom))::integer,' \
+              '                     upperleftx => ST_XMin(g.geom), ' \
+              '                     upperlefty => ST_YMax(g.geom), ' \
+              '                     scalex =>  (SELECT (ST_MetaData(rast)).scalex FROM "{0}"."{2}" LIMIT 1),' \
+              '                     scaley => (SELECT (ST_MetaData(rast)).scaley FROM "{0}"."{2}" LIMIT 1),' \
+              '                     skewx => (SELECT (ST_MetaData(rast)).skewx FROM "{0}"."{2}" LIMIT 1), ' \
+              '                     skewy => (SELECT (ST_MetaData(rast)).skewy FROM "{0}"."{2}" LIMIT 1),' \
+              '                     srid => %s) AS t(rast) ' \
+              'INNER JOIN "{0}"."{2}" AS r ON ST_Transform(t.rast::geometry, %s) && r.rast ' \
+              'GROUP BY t.rast;'.format(cfg.domain.case_schema, cfg.tables.buildings, cfg.tables.buildings_or, "'MAX'")
+    cur.execute(sqltext, (cfg.dem_srid, cfg.srid, cfg.srid, cfg.dem_srid))
+    sql_debug(connection)
+    connection.commit()
 
-verbose('Changing owner of the table')
-sqltext = 'ALTER TABLE "{}"."{}" OWNER TO {}'.format(cfg.domain.case_schema, cfg.tables.buildings, cfg.pg_owner)
-cur.execute(sqltext)
-sql_debug(connection)
+    verbose('Changing owner of the table')
+    sqltext = 'ALTER TABLE "{}"."{}" OWNER TO {}'.format(cfg.domain.case_schema, cfg.tables.buildings, cfg.pg_owner)
+    cur.execute(sqltext)
+    sql_debug(connection)
 
-debug('Adding serial rid index')
-sqltext = 'ALTER TABLE "{0}"."{1}" DROP COLUMN IF EXISTS rid; ' \
-          'ALTER TABLE "{0}"."{1}" ADD COLUMN IF NOT EXISTS rid SERIAL' \
-    .format(cfg.domain.case_schema, cfg.tables.buildings)
-cur.execute(sqltext)
-sql_debug(connection)
-connection.commit()
-
-if cfg.clean_up:
-    debug('Cleaning up imported buildings DEM')
-    sqltext = 'DROP TABLE "{0}"."{1}" CASCADE;'.format(cfg.domain.case_schema, cfg.tables.buildings_or)
+    debug('Adding serial rid index')
+    sqltext = 'ALTER TABLE "{0}"."{1}" DROP COLUMN IF EXISTS rid; ' \
+              'ALTER TABLE "{0}"."{1}" ADD COLUMN IF NOT EXISTS rid SERIAL' \
+        .format(cfg.domain.case_schema, cfg.tables.buildings)
     cur.execute(sqltext)
     sql_debug(connection)
     connection.commit()
+
+    if cfg.clean_up:
+        debug('Cleaning up imported buildings DEM')
+        sqltext = 'DROP TABLE "{0}"."{1}" CASCADE;'.format(cfg.domain.case_schema, cfg.tables.buildings_or)
+        cur.execute(sqltext)
+        sql_debug(connection)
+        connection.commit()
 
 """ ORIGINAL LANDCOVER """
 progress('Processing Landcover')

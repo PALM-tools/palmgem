@@ -1,0 +1,249 @@
+# lower and upper limits for all parameters to check whether some value is miss-specified or miss-calculated
+# it is in form of list, 1..lower, 2..upper, 3..message, TODO: 4..what was specified (values or link to SQL table)
+# name in ncfile + _bounds
+# TODO: do this for more variables, e.g. lad, bad, zsoil, zt, nsurface_fraction,
+
+
+pavement_pars_bounds:
+    0: [0, 2.0, 'roughness for momentum']     # roughness length for momentum (m)
+    1: [0, 2.0, 'roughness for heat']   # roughness length for heat (m)
+    2: [0, 10,   'albedo type']                 # albedo type set to 0 = albedo will be supplied in albedo_props
+                          # pavement_pars 2 is set automatically based on pavement type used (including 0 for user-defined), it is overwritten if albedo_pars is used
+    3: [0, 1, 'emissivity']     # emissivity (0-1)
+
+water_pars_bounds:
+    0: [270, 320, 'Water temperature']   # water temperature (fixed) (K)
+    1: [0, 2.0, 'Roughness for momentum']  # Roughness length for momentum
+    2: [0, 2.0, 'Roughness for heat']      # Roughness length for heat
+    3: [0.5, 3, 'Heat conductivity between skin layer and water (stable conditions)']
+           # Heat conductivity between skin layer and water (stable conditions)
+    4: [0.5, 3, 'Heat conductivity between skin layer and water (unstable conditions)']
+           # Heat conductivity between skin layer and water (unstable conditions)
+    5: [0, 10, 'albedo type'] # albedo_type
+    6: [0, 1,  'Surface emissivity'] # Surface emissivity
+
+vegetation_pars_bounds:
+    0: [0, 1000.0, 'Minimum canopy resistance'] # fixme: complete # Minimum canopy resistance
+    1: [0, 10.0, 'Leaf area index'] # Leaf area index
+    2: [0, 1, 'Vegetation coverage'] # Vegetation coverage
+    3: [0, 1, 'Canopy resistance coefficient'] # Canopy resistance coefficient
+    4: [0, 3.0, 'Roughness length for momentum']  # Roughness length for momentum
+    5: [0, 3.0, 'Roughness length for heat'] # Roughness length for heat
+    6: [0, 60.0, 'Skin lacer heat conductivity (stable conditions)'] # Skin lacer heat conductivity (stable conditions)
+    7: [0, 60.0, 'Skin layer heat conductivity (unstable conditions)'] # Skin layer heat conductivity (unstable conditions)
+    8: [0, 1, 'Fraction of incoming shortwave radiation transmitted directly to the soil (not implemented yet)']
+              # Fraction of incoming shortwave radiation transmitted directly to the soil (not implemented yet)
+    9: [0, 3000000.0, 'Heat capacity of the surface'] # Heat capacity of the surface
+    10: [0, 20, 'albedo_type'] # albedo_type
+    11: [0, 1, 'Surface emissivity '] # Surface emissivity
+
+pavement_subsurface_pars_bounds:
+    0: [0.1, 3.0, 'Thermal conductivity of the respective soil layer (W/m/K)']
+        # Thermal conductivity of the respective soil layer (W/m/K)
+    1: [0, 3000000.0, 'Volumetric heat capacity of the respective soil layer (J/m³/K)']
+        # Volumetric heat capacity of the respective soil layer (J/m³/K)
+
+
+
+# calculation formulas for particular parameters of building_pars in wall areas
+# TODO add insulated walls
+# TODO need to update according last PIDS changes!!
+building_pars_bounds:
+    0:  [0, 1.0, 'Wall fraction above the ground floor level (0-1)']
+    1:  [0, 0.95, 'Window fraction above the ground floor level (0-1)']   # FIXME Honza's idea to limit it to 95 %
+    2:  [0, 1.0, 'Green fraction on wall above the ground floor level (0-1)']
+    3:  [0, 1.0, 'Green fraction on roof (0-1)']
+        # NOTE set 0.9 for roof type 4 (lawn) and 0.5 for roof type 5 (ornamental garden) (set according building_pars_repl)
+    4:  [0, 10.0, 'Leaf area index of green fraction on roof (m²/m²)']
+        # NOTE set 1.4 for roof type 4 (lawn) and 0.4 for roof type 5 (ornamental garden) (set according building_pars_repl)
+    5:  [0, 10.0, 'Leaf area index of green fraction on wall above the ground floor level (m²/m²)']
+    6:  [0, 3000000.0, 'Heat capacity of wall layer 1 above the ground floor level (J/m²/K)']
+    7:  [0, 3000000.0, 'Heat capacity of wall layer 2 above the ground floor level (J/m²/K)']
+    8:  [0, 3000000.0, 'Heat capacity of wall layer 3 above the ground floor level (J/m²/K)']
+    9:  [0, 3.0, 'Thermal conductivity of wall layer 1 above the ground floor level (W/m/K)']
+    10: [0, 3.0, 'Thermal conductivity of wall layer 2 above the ground floor level (W/m/K)']
+    11: [0, 3.0, 'Thermal conductivity of wall layer 3 above the ground floor level (W/m/K)']
+    12: [270, 320, 'Indoor target summer temperature (K)']
+    13: [270, 320, 'Indoor target winter temperature (K)']
+    14: [0, 1.0, 'Emissivity of wall fraction above the ground floor level (0-1)']
+    15: [0, 1.0, 'Emissivity of green fraction above the ground floor level (0-1)']
+    16: [0, 0.95, 'Emissivity of window fraction above the ground floor level (0-1)']
+    17: [0, 1.0, 'Transmissivity of window fraction above the ground floor level (0-1)']
+    18: [0, 2.0, 'Roughness length for momentum above the ground floor level (m)']
+    19: [0, 2.0, 'Roughness length for heat above the ground floor level (m)']
+    20: [0, 6.0, 'Ground floor height (m)']
+    21: [0, 1.0, 'Ground floor wall fraction (0-1)']
+    22: [0, 0.95, 'Ground floor window fraction (0-1)']
+    23: [0, 1.0, 'Ground floor green fraction on wall (0-1)']
+    24: [0, 1.0, 'Ground floor green fraction on roof  (0-1)']
+    25: [0, 10.0, 'Ground floor leaf area index of green fraction (wall) (m²/m²)']
+    26: [0, 3000000.0, 'Ground floor heat capacity of wall layer 1 (J/m²/K)']
+    27: [0, 3000000.0, 'Ground floor heat capacity of wall layer 2 (J/m²/K)']
+    28: [0, 3000000.0, 'Ground floor heat capacity of wall layer 3 (J/m²/K)']
+    29: [0, 3.0, 'Ground floor thermal conductivity of wall layer 1 (W/m/K)']
+    30: [0, 3.0, 'Ground floor thermal conductivity of wall layer 2 (W/m/K)']
+    31: [0, 3.0, 'Ground floor thermal conductivity of wall layer 3 (W/m/K)']
+    32: [0, 1.0, 'Ground floor emissivity of wall fraction (0-1)']
+    33: [0, 1.0, 'Ground floor emissivity of green fraction (0-1)']
+    34: [0, 1.0, 'Ground floor emissivity of window fraction (0-1)']
+    35: [0, 1.0, 'Ground floor transmissivity of window fraction (0-1)']
+    36: [0, 1.0, 'Ground floor roughness length for momentum (m)']
+    37: [0, 2.0, 'Ground floor roughness length for heat (m)']
+    38: [0, 20, 'albedo_type of wall fraction, albedo_type = 0 albedo will be supplied by albedo_props']
+    39: [0, 20, 'albedo_type of green fraction, albedo_type = 0 albedo will be supplied by albedo_props']
+    40: [0, 20, 'albedo_type of window fraction, albedo_type = 0 albedo will be supplied by albedo_props']
+    41: [0, 1.0, 'Wall thickness of layer 1 (m)']
+    42: [0, 1.0, 'Wall thickness of layer 2 (m)']
+    43: [0, 1.0, 'Wall thickness of layer 3 (m)']
+    44: [0, 1.0, 'Wall thickness of layer 4 (m)']
+    45: [0, 3000000.0, 'Surface wall heat capacity (J/m²/K)']
+    46: [0, 3.0, 'Surface wall conductivity (W/m²/K)']
+    47: [0, 3000000.0, 'Heat capacity of window surface (J/m²/K)']
+    48: [0, 3000000.0, 'Heat capacity of green surface (J/m²/K)']
+    49: [0, 3.0, 'Thermal conductivity of window surface (W/m/K)']
+    50: [0, 3.0, 'Thermal conductivity of green surface (W/m/K)']
+    51: [0, 1.0, 'Wall fraction ground plate (1)']
+    52: [0, 4.0, 'Thickness of ground plate wall layer 1 (m)']
+    53: [0, 4.0, 'Thickness of ground plate wall layer 2 (m)']
+    54: [0, 4.0, 'Thickness of ground plate wall layer 3 (m)']
+    55: [0, 4.0, 'Thickness of ground plate wall layer 4 (m)']
+    56: [0, 3000000.0, 'Heat capacity of ground plate wall layers 1 (J/m²/K)']
+    57: [0, 3000000.0, 'Heat capacity of ground plate wall layer 2 (J/m²/K)']
+    58: [0, 3000000.0, 'Heat capacity of ground plate wall layer 3 (J/m²/K)']
+    59: [0, 3.0, 'Thermal conductivity of ground plate wall layers 1 (W/m/K)']
+    60: [0, 3.0, 'Thermal conductivity of ground plate wall layer 2 (W/m/K)']
+    61: [0, 3.0, 'Thermal conductivity of ground plate wall layer 3 (W/m/K)']
+    62: [0, 1.0, 'Thickness of first floor wall layer 1 (m)']
+    63: [0, 1.0, 'Thickness of first floor wall layer 2 (m)']
+    64: [0, 1.0, 'Thickness of first floor wall layer 3 (m)']
+    65: [0, 1.0, 'Thickness of first floor wall layer 4 (m)']
+    66: [0, 1.0, 'Albedo of ground floor wall (1)']
+    67: [0, 1.0, 'Thickness of first floor window layer 1 (m)']
+    68: [0, 1.0, 'Thickness of first floor window layer 2 (m)']
+    69: [0, 1.0, 'Thickness of first floor window layer 3 (m)']
+    70: [0, 1.0, 'Thickness of first floor window layer 4 (m)']
+    71: [0, 3000000.0, 'Heat capacity of first floor window layers 1 (J/m²/K)']
+    72: [0, 3000000.0, 'Heat capacity of first floor window layer 2 (J/m²/K)']
+    73: [0, 3000000.0, 'Heat capacity of first floor window layer 3 (J/m²/K)']
+    74: [0, 3.0, 'Thermal conductivity of first floor window layers 1 (W/m/K)']
+    75: [0, 3.0, 'Thermal conductivity of first floor window layer 2 (W/m/K)']
+    76: [0, 3.0, 'Thermal conductivity of first floor window layer 3 (W/m/K)']
+    77: [0, 1.0, 'Albedo of first floor window (1)']
+    78: [0, 1.0, 'Albedo of first floor green surface (1)']
+    79: [0, 1.0, 'Thickness of standard floor window layer 1 (m)']
+    80: [0, 1.0, 'Thickness of standard floor window layer 2 (m)']
+    81: [0, 1.0, 'Thickness of standard floor window layer 3 (m)']
+    82: [0, 1.0, 'Thickness of standard floor window layer 4 (m)']
+    83: [0, 3000000.0, 'Heat capacity of standard floor wall layers 1 (J/m²/K)']
+    84: [0, 3000000.0, 'Heat capacity of standard floor wall layer 2 (J/m²/K)']
+    85: [0, 3000000.0, 'Heat capacity of standard floor wall layer 3 (J/m²/K)']
+    86: [0, 3.0, 'Thermal conductivity of standard floor wall layers 1 (W/m/K)']
+    87: [0, 3.0, 'Thermal conductivity of standard floor wall layer 2 (W/m/K)']
+    88: [0, 3.0, 'Thermal conductivity of standard floor wall layer 3 (W/m/K)']
+    89: [0, 1.0, 'Wall fraction of roof (1)']
+    90: [0, 1.0, 'Thickness of roof layer 1 (m)']
+    91: [0, 1.0, 'Thickness of roof layer 2 (m)']
+    92: [0, 1.0, 'Thickness of roof layer 3 (m)']
+    93: [0, 1.0, 'Thickness of roof layer 4 (m)']
+    94: [0, 3000000.0, 'Heat capacity of roof layers 1 (J/m²/K)']
+    95: [0, 3000000.0, 'Heat capacity of roof layer 2 (J/m²/K)']
+    96: [0, 3000000.0, 'Heat capacity of roof layer 3 (J/m²/K)']
+    97: [0, 3.0, 'Thermal conductivity of roof layers 1 (W/m/K)']
+    98: [0, 3.0, 'Thermal conductivity of roof layer 2 (W/m/K)']
+    99: [0, 3.0, 'Thermal conductivity of roof layer 3 (W/m/K)']
+    100: [0, 1.0, 'Emissivity of roof (1)']
+    101: [0, 1.0, 'Albedo of roof (1)']
+    102: [0, 0.95, 'Window fraction of roof (1)']
+    103: [0, 1.0, 'Thickness of roof window layer 1 (m)']
+    104: [0, 1.0, 'Thickness of roof window layer 2 (m)']
+    105: [0, 1.0, 'Thickness of roof window layer 3 (m)']
+    106: [0, 1.0, 'Thickness of roof window layer 4 (m)']
+    107: [0, 3000000.0, 'Heat capacity of window layers 1 (J/m²/K)']
+    108: [0, 3000000.0, 'Heat capacity of window layer 2 (J/m²/K)']
+    109: [0, 3000000.0, 'Heat capacity of window layer 3 (J/m²/K)']
+    110: [0, 3.0, 'Thermal conductivity of window layers 1 (W/m/K)']
+    111: [0, 3.0, 'Thermal conductivity of window layer 2 (W/m/K)']
+    112: [0, 3.0, 'Thermal conductivity of window layer 3 (W/m/K)']
+    113: [0, 0.95, 'Emissivity of roof window (1)']
+    114: [0, 1.0, 'Transmissivity of roof window (1)']
+    115: [0, 1.0, 'Albedo of roof window (1)']
+    116: [0, 1.0, 'Emissivity of roof green surface (1)']
+    117: [0, 1.0, 'Albedo of roof green surface (1)']
+    118: [0, 3, 'Type of green roof (=1 extensive, =2 intensive)) (1)']
+    119: [0, 1.0, 'Shading factor (1)']
+    120: [0, 10.0, 'Window g-value (1)']
+    121: [0, 10.0, 'Window u-value (W/m²/K)']
+    122: [0, 10.0, 'Basic air flow without occupancy of room (1/h)']
+    123: [0, 10.0, 'Additional air flow during occupancy of room (1/h)']
+    124: [0, 1.0, 'Heat recovery efficiency (1)']
+    125: [0, 1.0, 'Factor for mass specific active surface (1)']
+    126: [0, 100.0, 'Factor for inner heat storage of building zone (J/m²/K)']
+    127: [0, 1.0, 'Ratio of internal surface to floor area (1)']
+    128: [0, 100.0, 'Maximum heating capacity (W)']
+    129: [0, 100.0, 'Maximum cooling capacity (W)']
+    130: [0, 100.0, 'Additional internal heat gains during occupancy of room']
+    131: [0, 1.0, 'Basic internal heat gains without occupancy of room']
+    132: [0, 10.0, 'Storey height (m)']
+    133: [0, 10.0, 'Ceiling construction height  (m)']
+    134: [0, 1.0, 'Technology heating factor for anthropogenic heat losses (1)']
+    135: [0, 1.0, 'Technology cooling factor for anthropogenic heat losses (1)']
+    136: [0, 3000000.0, 'Heat capacity of wall layer 4 above the ground floor level (J/m²/K)']
+    137: [0, 3.0, 'Thermal conductivity of wall layer 4 above the ground floor level (W/m/K)']
+    138: [0, 3000000.0, 'Heat capacity of wall layer 4 at the ground floor level (J/m²/K)']
+    139: [0, 3.0, 'Thermal conductivity of wall layer 4 at the ground floor level (W/m/K)']
+    140: [0, 3000000.0, 'Heat capacity of wall layer 4 at ground plate (J/m²/K)']
+    141: [0, 3.0, 'Thermal conductivity of wall layer 4 at ground plate (W/m/K)']
+    142: [0, 3000000.0, 'Heat capacity of window layer 4 at the ground floor level (J/m²/K)']
+    143: [0, 3.0, 'Thermal conductivity of window layer 4 at the ground floor level (W/m/K)']
+    144: [0, 3000000.0, 'Heat capacity of window layer 4 above the ground floor level (J/m²/K)']
+    145: [0, 3.0, 'Thermal conductivity of window layer 4 above the ground floor level (W/m/K)']
+    146: [0, 3000000.0, 'Heat capacity of wall layer 4 at roof (J/m²/K)']
+    147: [0, 3.0, 'Thermal conductivity of wall layer 4 at roof (W/m/K)']
+    148: [0, 3000000.0, 'Heat capacity of window layer 4 at roof (J/m²/K)']
+    149: [0, 3.0, 'Thermal conductivity of window layer 4 at roof  (W/m/K)']
+
+
+# calculation formulas for particular parameters of building_surface_pars
+# TODO add insulated walls
+# TODO need to check according last PIDS changes!!
+# https://palm.muk.uni-hannover.de/trac/wiki/doc/app/iofiles/pids/static/tables
+building_surface_pars_bounds:
+    0: [0, 1.0, 'wall fraction (0-1) (set according building_pars_repl)']
+    1: [0, 0.95, 'window fraction (0-1) # no data for window fraction on roofs, set to zero']
+    2: [0, 1.0, 'green fraction on wall (0-1) not in use set to zero so far']
+    3: [0, 1.0, 'green fraction on roof (0-1) set 0.9 for roof type 4 (lawn) and 0.5 for roof type 5 (ornamental garden) (set according building_pars_repl)']
+    4: [0, 10.0, 'leaf area index of green fraction (roof) set 1.4 for roof type 4 (lawn) and 0.4 for roof type 5 (ornamental garden) (set according building_pars_repl)']
+    5: [0, 3000000.0, 'heat capacity of wall layer 1']
+    6: [0, 3000000.0, 'heat capacity of wall layer 2']
+    7: [0, 3000000.0, 'heat capacity of wall layer 3']
+    8: [0, 3.0, 'thermal conductivity of wall layer 1']
+    9: [0, 3.0, 'thermal conductivity of wall layer 2']
+    10: [0, 3.0, 'thermal conductivity of wall layer 3']
+    11: [270, 320, 'indoor target summer temperature (K)']
+    12: [270, 320, 'indoor target winter temperature (K)']
+    13: [0, 1.0, 'emissivity of wall fraction (0-1)']
+    14: [0, 1.0, 'emissivity of green fraction (0-1)']
+    15: [0, 1.0, 'emissivity of window fraction (0-1)']
+    16: [0, 1.0, 'transmissivity of window fraction (0-1)']
+    17: [0, 2.0, 'roughness length for momentum (m)']
+    18: [0, 2.0, 'roughness length for heat (m)']
+    19: [0, 1.0, 'Broadband albedo of wall fraction']
+    20: [0, 1.0, 'Longwave albedo of wall fraction']
+    21: [0, 1.0, 'Shortwave albedo of wall fraction']
+    22: [0, 1.0, 'Broadband albedo of window fraction']
+    23: [0, 1.0, 'Longwave albedo of window fraction']
+    24: [0, 1.0, 'Shortwave albedo of window fraction']
+    25: [0, 1.0, 'Broadband albedo of green fraction']
+    26: [0, 1.0, 'Longwave albedo of green fraction']
+    27: [0, 1.0, 'Shortwave albedo of green fraction']
+
+# calculation formulas for particular parameters of albedo_pars(nalbedo_pars,y,x)
+# [landcover, building roof, building wall (above groud floor level)]
+albedo_pars:
+    0: [0, 1.0, 'Broadband albedo (wall fraction in case of building) at (y,x).']
+    1: [0, 1.0, 'Only for buildings. Longwave albedo of wall fraction at (y,x).']
+    2: [0, 1.0, 'Only for buildings. Shortwave albedo of wall fraction at (y,x).']
+    3: [0, 1.0, 'Only for buildings. Longwave albedo of green fraction at (y,x). (no info for green fraction on roofs so far)']
+    4: [0, 1.0, 'Only for buildings. Shortwave albedo of green fraction at (y,x). (no info for green fraction on roofs so far)']
+    5: [0, 1.0, 'Only for buildings. Longwave albedo of window fraction at (y,x). (no info for window fraction on roofs so far)']
+    6: [0, 1.0, 'Only for buildings. Shortwave albedo of window fraction at (y,x). (no info for window fraction on roofs so far)']

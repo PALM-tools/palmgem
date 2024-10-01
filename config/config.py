@@ -223,38 +223,42 @@ def load_config(argv, cfg_default_path='config/default_config.yaml', cfg_default
 
     # load default configuration
     with open(cfg_default_path_share, 'r') as f:
-        cfg._ingest_dict(yaml.load(f))
+        cfg._ingest_dict(yaml.load(f, Loader=yaml.FullLoader))
 
     # load default configuration
     with open(cfg_default_path, 'r') as f:
-        cfg._ingest_dict(yaml.load(f))
+        cfg._ingest_dict(yaml.load(f, Loader=yaml.FullLoader))
 
     # load settings from user configfile (if available)
     if argv.config:
         with open('config/' + argv.config, 'r') as config_file:
-            cfg._ingest_dict(yaml.load(config_file), check_exist=True)
+            cfg._ingest_dict(yaml.load(config_file, Loader=yaml.FullLoader), check_exist=True)
 
     # extras based on the specific case
-    case_schema = cfg.domain.name if cfg.domain.scenario == "" else cfg.domain.name + '_' + cfg.domain.scenario
-    cfg.domain._settings['case_schema'] = case_schema
+    if 'domain' in cfg._settings.keys():
+        case_schema = cfg.domain.name if cfg.domain.scenario == "" else cfg.domain.name + '_' + cfg.domain.scenario
+        cfg.domain._settings['case_schema'] = case_schema
 
     # static driver netcdf file name
-    if not 'static_driver_file' in cfg.domain._settings.keys():
-        if cfg.domain.scenario == "":
-            static_driver_file = cfg.domain.name + '_static.nc'
-        else:
-            static_driver_file = cfg.domain.name + '_' + cfg.domain.scenario + '_static.nc'
-        cfg.domain._settings['static_driver_file'] = os.path.join('output', static_driver_file)
+    if 'domain' in cfg._settings.keys():
+        if not 'static_driver_file' in cfg.domain._settings.keys():
+            if cfg.domain.scenario == "":
+                static_driver_file = cfg.domain.name + '_static.nc'
+            else:
+                static_driver_file = cfg.domain.name + '_' + cfg.domain.scenario + '_static.nc'
+            cfg.domain._settings['static_driver_file'] = os.path.join('output', static_driver_file)
 
     # name file of visual check according to case_schema
-    cfg.visual_check._settings['path'] = os.path.join('visual_check', case_schema)
+    if 'domain' in cfg._settings.keys():
+        cfg.visual_check._settings['path'] = os.path.join('visual_check', case_schema)
 
     if not os.path.isdir(os.path.join('visual_check')):
         os.mkdir(os.path.join('visual_check'))
 
     # create file for visual check
-    if (cfg.visual_check.enabled or cfg.slanted_pars.do_vtk) and not os.path.isdir(cfg.visual_check.path):
-        os.mkdir(cfg.visual_check.path)
+    if 'domain' in cfg._settings.keys():
+        if (cfg.visual_check.enabled or cfg.slanted_pars.do_vtk) and not os.path.isdir(cfg.visual_check.path):
+            os.mkdir(cfg.visual_check.path)
 
     #create file for netcdf outputs
     if not os.path.isdir('output'):
@@ -263,14 +267,15 @@ def load_config(argv, cfg_default_path='config/default_config.yaml', cfg_default
     # name log file according to case_schema
     if not os.path.isdir('logs'):
         os.mkdir('logs')
-
-    cfg.logs._settings['path'] = os.path.join('logs', case_schema)
+    if 'domain' in cfg._settings.keys():
+        cfg.logs._settings['path'] = os.path.join('logs', case_schema)
+    else:
+        cfg.logs._settings['path'] = os.path.join('logs', cfg.input_schema)
 
     # check log level, if sublevel are not specified, set them as general log level
     for lvl in cfg.logs._settings.keys():
         if 'level_' in lvl:
             if cfg.logs[lvl] == -1:
                 cfg.logs._settings[lvl] = cfg.logs.level
-
 
 cfg = ConfigObj()
