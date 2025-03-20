@@ -147,7 +147,7 @@ begin
         end if;
 
         max_lad_ji = tl * lad_red;
-        max_bad_ji = tl * coef * bad_coef
+        max_bad_ji = tl * coef * bad_coef;
 
         -- calculate min and max layer of the tree crown and trunk
         nbad = cast(floor(tb/dz) as integer);
@@ -219,11 +219,11 @@ begin
                 raise notice 'Test';
             end if;
             -- create tree circle geometry for layer l
-            sqltext = $mydelim$select ST_Buffer($1, $2, 'quad_segs=$3') $mydelim$;
+            sqltext = $mydelim$select ST_Buffer($1, $2, 'quad_segs=10') $mydelim$;
             if debug_level < 3 then
                 raise notice 'sqltext: %', sqltext;
             end if;
-            execute sqltext using geom_tc, r, nump into geom_cir;
+            execute sqltext using geom_tc, r into geom_cir;
 
             -- calculate intersection of the circle with affected grid boxes
             sqltext = format('select g.id, g.i, g.j, g.xcen, g.ycen, '||
@@ -249,7 +249,7 @@ begin
 
                 text1 = format('lad_%s', l);
                 text2 = format('bad_%s', l);
-                sqltext = format('update %I.%I set %I = MAX(%I + $1, $4), %I = MAX(%I + $2, $5) where id = $3 ',
+                sqltext = format('update %I.%I set %I = LEAST(%I + $1, $4), %I = LEAST(%I + $2, $5) where id = $3 ',
                                  case_schema, tree_grid_table, text1, text1, text2, text2);
                 if debug_level < 3 then
                     raise notice 'sqltext: %', sqltext;

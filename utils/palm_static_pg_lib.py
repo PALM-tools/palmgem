@@ -309,7 +309,8 @@ def copy_rasters_from_input(grid_ext, cfg, connection, cur):
 
         params: grid_ext: rectangle polygon around grid, created in calculate_grid_extend function
     """
-    rtables = [cfg.tables.dem, cfg.tables.buildings_height, cfg.tables.extras]
+    rtables = [cfg.tables.dem, cfg.tables.buildings_height, cfg.tables.extras,
+               cfg.tables.lai, cfg.tables.canopy_height]
     rtabs = []
     for rel in rtables:
         # check if table exists in input source schema
@@ -482,6 +483,16 @@ def check_buildings(cfg, connection, cur, rtabs, vtabs, grid_ext):
         cur.execute('DROP TABLE IF EXISTS "{0}"."{1}"'.format(cfg.domain.case_schema, cfg.tables.extras))
         sql_debug(connection)
         connection.commit()
+
+    debug('Checking canopy lai')
+    if cfg.canopy.using_lai:
+        if not cfg.tables.lai in rtabs:
+            warning('LAI is not in inputs, suppress canopy.using_lai option')
+            cfg.canopy._settings['using_lai'] = False
+
+        if not cfg.tables.canopy_height in rtabs:
+            warning('Canopy_height is not in inputs, suppress canopy.using_lai option')
+            cfg.canopy._settings['using_lai'] = False
 
 def calculate_terrain_height(cfg, connection, cur):
     """ Calculate terrain height for each grid cell in PALM domain.

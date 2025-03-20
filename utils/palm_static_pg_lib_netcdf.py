@@ -727,6 +727,30 @@ def write_buildings(ncfile, cfg, connection, cur):
         #     connection.commit()
         #     debug_sql(connection)
 
+def prepared_lad_netcdf(ncfile, cfg, nzlad):
+    """ Prepare dimension and variables """
+    vt = 'f4'
+    debug('create zlad and zbad dimensions')
+    zlad = [0] + [x * cfg.domain.dz + 0.5 * cfg.domain.dz for x in range(nzlad)]
+    nc_create_dimension(ncfile, 'zlad', nzlad+1)
+    temp = ncfile.createVariable('zlad', vt, 'zlad')
+    temp[:] = zlad[:]
+    # create and write lad and bad variables
+    vn = 'lad'
+    var = ncfile.createVariable(vn, vt, ('zlad', 'y', 'x'), fill_value=cfg.fill_values[vt])
+    nc_write_attribute(ncfile, vn, 'long_name', 'leaf area density')
+    nc_write_attribute(ncfile, vn, 'units', 'm2/m3')
+    nc_write_attribute(ncfile, vn, 'res_orig', cfg.domain.dz)
+    nc_write_attribute(ncfile, vn, 'coordinates', 'E_UTM N_UTM lon lat')
+    nc_write_attribute(ncfile, vn, 'grid_mapping', 'E_UTM N_UTM lon lat')
+
+    vn = 'bad'
+    ncfile.createVariable(vn, vt, ('zlad', 'y', 'x'), fill_value=cfg.fill_values[vt])
+    nc_write_attribute(ncfile, vn, 'long_name', 'branch area density')
+    nc_write_attribute(ncfile, vn, 'units', 'm3/m3')
+    nc_write_attribute(ncfile, vn, 'res_orig', cfg.domain.dz)
+    nc_write_attribute(ncfile, vn, 'coordinates', 'E_UTM N_UTM lon lat')
+    nc_write_attribute(ncfile, vn, 'grid_mapping', 'E_UTM N_UTM lon lat')
 
 def write_trees_grid(ncfile, cfg, connection, cur):
     """ Routine to generate trees """
@@ -757,28 +781,10 @@ def write_trees_grid(ncfile, cfg, connection, cur):
             lad[l, j, i] += tree[2 * l + 2]
             bad[l, j, i] += tree[2 * l + 3]
 
-    debug('create zlad and zbad dimensions')
-    zlad = [0] + [x * cfg.domain.dz + 0.5 * cfg.domain.dz for x in range(nzlad)]
-    nc_create_dimension(ncfile, 'zlad', nzlad+1)
-    temp = ncfile.createVariable('zlad', vt, 'zlad')
-    temp[:] = zlad[:]
-    # create and write lad and bad variables
-    vn = 'lad'
-    var = ncfile.createVariable(vn, vt, ('zlad', 'y', 'x'), fill_value=cfg.fill_values[vt])
-    nc_write_attribute(ncfile, vn, 'long_name', 'leaf area density')
-    nc_write_attribute(ncfile, vn, 'units', 'm2/m3')
-    nc_write_attribute(ncfile, vn, 'res_orig', cfg.domain.dz)
-    nc_write_attribute(ncfile, vn, 'coordinates', 'E_UTM N_UTM lon lat')
-    nc_write_attribute(ncfile, vn, 'grid_mapping', 'E_UTM N_UTM lon lat')
-    var[1:, :, :] = lad
-    vn = 'bad'
-    var = ncfile.createVariable(vn, vt, ('zlad', 'y', 'x'), fill_value=cfg.fill_values[vt])
-    nc_write_attribute(ncfile, vn, 'long_name', 'branch area density')
-    nc_write_attribute(ncfile, vn, 'units', 'm3/m3')
-    nc_write_attribute(ncfile, vn, 'res_orig', cfg.domain.dz)
-    nc_write_attribute(ncfile, vn, 'coordinates', 'E_UTM N_UTM lon lat')
-    nc_write_attribute(ncfile, vn, 'grid_mapping', 'E_UTM N_UTM lon lat')
-    var[1:, :, :] = bad
+    prepared_lad_netcdf(ncfile, cfg, nzlad)
+
+    ncfile.variables['lad'][1:, :, :] = lad
+    ncfile.variables['bad'][1:, :, :] = bad
     if cfg.visual_check.enabled:
         for k in range(nzlad):
             variable_visualization(var=ncfile['lad'][k, ...],
@@ -789,6 +795,47 @@ def write_trees_grid(ncfile, cfg, connection, cur):
                                    x=np.asarray(ncfile.variables['x']), y=np.asarray(ncfile.variables['y']),
                                    var_name='bad', par_id=k, text_id='trunk_area_density', path=cfg.visual_check.path,
                                    show_plots=cfg.visual_check.show_plots)
+
+def write_lad_grid(ncfile, cfg, connection, cur):
+    """ Write into netcdf LAD and BAD field """
+    sqltext = """
+        select max(canopy_height) 
+        from "{0}"."{1}" 
+    """.format(cfg.domain.case_schema, cfg.tables.grid)
+    cur.execute(sqltext)
+    ret = cur.fetchone()
+    nzlad = ceil(ret[0] / cfg.domain.dz) + 1
+    sql_debug(connection)
+
+    debug('nzlad = {}', nzlad)
+    vt = 'f4'
+    lad = np.zeros((nzlad, cfg.domain.ny, cfg.domain.nx), dtype=vt)
+    bad = np.zeros((nzlad, cfg.domain.ny, cfg.domain.nx), dtype=vt)
+
+    prepared_lad_netcdf(ncfile, cfg, nzlad)
+
+    ncfile.variables['lad'][0, :, :] = 0.0
+    ncfile.variables['lad'][0, :, :] = 0.0
+
+    for nz in range(1, nzlad+1):
+        verbose('nz: {}', nz)
+        sqltext = """ 
+        select 
+            case when {5} between 0.0 and g.canopy_height and g.canopy_height > 0
+                    then least(1.6, lai / canopy_height) * greatest(0.0, least((canopy_height - {2}) / {4}, 1.0))
+                else 0.0 end
+        from "{0}"."{1}" g
+        order by g.j, g.i
+        """.format(cfg.domain.case_schema, cfg.tables.grid,
+                   (nz - 1) * cfg.domain.dz, (nz) * cfg.domain.dz, cfg.domain.dz,
+                   (nz - 0.5) * cfg.domain.dz)
+        cur.execute(sqltext)
+        res = cur.fetchall()
+        sql_debug(connection)
+        lad = np.reshape(np.asarray([x[0] for x in res], dtype=vt), (cfg.domain.ny, cfg.domain.nx))
+        ncfile.variables['lad'][nz, :, :] = lad
+        bad = 0.1 * lad
+        ncfile.variables['bad'][nz, :, :] = bad
 
 def write_building_pars(ncfile, cfg, connection, cur):
     # write building_pars - roof parameters

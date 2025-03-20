@@ -22,7 +22,7 @@ import psycopg2
 from utils.palm_static_pg_lib import *
 from utils.palm_static_pg_lib_cct import *
 from utils.consistency_checks import *
-from utils.tree_lib import process_trees
+from utils.tree_lib import *
 from config.config import load_config, cfg
 from argparse import ArgumentParser
 import getpass
@@ -135,6 +135,10 @@ if cfg.has_trees:
     progress('Process trees')
     process_trees(cfg, connection, cur)
 
+if cfg.canopy.using_lai:
+    progress('Processing LAI and canopy height into LAD')
+    process_lai(cfg, connection, cur)
+
 progress('Done with preparation of geo inputs')
 progress('Process data into netCDF4 static driver according to PALM Input Data Standard')
 
@@ -179,6 +183,10 @@ if cfg.lod2:
 if cfg.has_trees:
     progress('Writing lad, bad')
     write_trees_grid(ncfile, cfg, connection, cur)
+
+if cfg.canopy.using_lai:
+    progress('Writing lad, bad')
+    write_lad_grid(ncfile, cfg, connection, cur)
 
 if cfg.do_cct:
     slanted_surface_init(cfg, connection, cur)
