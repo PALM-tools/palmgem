@@ -68,3 +68,57 @@ def process_trees(cfg, connection, cur):
     cur.execute(sqltext)
     sql_debug(connection)
     restore_log_level(cfg)
+
+def process_lai(cfg, connection, cur):
+    """ A routine to process canopy using source LAI and canopy height into LAD """
+    debug('Add lai and canopy height column into grid table')
+    sqltext = """
+        alter table "{0}"."{1}" 
+        add column if not exists lai double precision,
+        add column if not exists canopy_height double precision;
+    """.format(cfg.domain.case_schema, cfg.tables.grid)
+    cur.execute(sqltext)
+    connection.commit()
+    sql_debug(connection)
+
+    debug('Intersecting grid and LAI raster')
+    sqltext = """
+        WITH lai as (
+            select 
+                lg.id as id, 
+                r.lai as lai
+            from "{0}"."{1}" lg
+        JOIN LATERAL ( SELECT ST_Value(rast, ST_SetSRID(ST_Point(lg.xcen, lg.ycen), %s)) AS lai 
+                       FROM "{0}"."{2}"
+                       WHERE ST_Intersects(rast, ST_SetSRID(ST_Point(lg.xcen, lg.ycen), %s))
+                       limit 1) r on true 		   
+        )
+        update "{0}"."{1}"  lg
+        set lai = lai.lai
+        from lai
+        where lai.id = lg.id;
+    """.format(cfg.domain.case_schema, cfg.tables.grid, cfg.tables.lai)
+    cur.execute(sqltext, (cfg.srid_palm, cfg.srid_palm, ))
+    connection.commit()
+    sql_debug(connection)
+
+    debug('Intersecting grid and canopy height raster')
+    sqltext = """
+        WITH ch as (
+        select 
+            lg.id as id, 
+            r.height as height
+        from "{0}"."{1}" lg
+        JOIN LATERAL ( SELECT ST_Value(rast, ST_SetSRID(ST_Point(lg.xcen, lg.ycen), %s)) AS height 
+                       FROM "{0}"."{2}"
+                       WHERE ST_Intersects(rast,  ST_SetSRID(ST_Point(lg.xcen, lg.ycen), %s))
+                       limit 1) r on true 		   
+        )
+        update "{0}"."{1}" lg
+        set canopy_height = case when ch.height >= 5.0 then ch.height else 0.0 end
+        from ch
+        where ch.id = lg.id;
+    """.format(cfg.domain.case_schema, cfg.tables.grid, cfg.tables.canopy_height)
+    cur.execute(sqltext, (cfg.srid_palm, cfg.srid_palm, ))
+    connection.commit()
+    sql_debug(connection)
