@@ -450,7 +450,7 @@ def preprocess_building_landcover(cfg, connection, cur):
     # TODO: remove duplicits {[a,b] ~ [b,a]}
 
     """ NOW CONVEX HULL """
-    debug('Creating convex hull between close pairs of building polygons, using segmentized outer wall')
+    debug('Creating convex hull between close pairs of building polygons, using segmented outer wall')
     build_conv = 'buildings_convex_hull'
     build_seg = 'buildings_wall_segments'
 
@@ -547,59 +547,6 @@ def preprocess_building_landcover(cfg, connection, cur):
     sql_debug(connection)
     connection.commit()
 
-    progress('Generating outer wall')
-    sqltext = 'DROP TABLE IF EXISTS "{0}"."{1}";' \
-              'CREATE TABLE "{0}"."{1}" AS SELECT ' \
-              'ST_SetSRID(ST_Boundary(ST_Union(geom)), %s) AS geom ' \
-              'FROM "{0}"."{2}"'.format(cfg.domain.case_schema, cfg.tables.walls_outer,
-                                        cfg.tables.build_new,)
-    cur.execute(sqltext, (cfg.srid_palm,))
-    sql_debug(connection)
-    connection.commit()
-
-    sqltext = 'ALTER TABLE "{0}"."{1}" ADD COLUMN {2} SERIAL' \
-              ''.format(cfg.domain.case_schema, cfg.tables.walls_outer, cfg.idx.walls)
-    cur.execute(sqltext)
-    sql_debug(connection)
-    connection.commit()
-
-    sqltext = 'CREATE INDEX wall_outer_geom_index ON "{0}"."{1}" USING gist(geom)'.format(cfg.domain.case_schema, cfg.tables.walls_outer)
-    cur.execute(sqltext)
-    sql_debug(connection)
-    connection.commit()
-
-    # generate outer walls
-    progress('Generating building outer walls')
-    verbose('Check if wall table is present (lod2 case)')
-    sqltext = 'SELECT EXISTS(SELECT * FROM information_schema.tables WHERE table_schema=%s and table_name=%s)'
-    cur.execute(sqltext, (cfg.domain.case_schema, cfg.tables.walls))
-    sql_debug(connection)
-    has_wall = cur.fetchone()[0]
-    if has_wall:
-        pass
-        # TODO if exists join with landcover lid
-    else:
-        sqltext = 'DROP TABLE IF EXISTS "{0}"."{1}"; ' \
-                  'CREATE TABLE "{0}"."{1}" AS  ' \
-                  'WITH segments AS ( ' \
-                  '     SELECT ST_MakeLine(lag((pt).geom, 1, NULL) OVER (PARTITION BY lid ORDER BY lid, (pt).path), (pt).geom) AS geom ' \
-                  '     FROM (SELECT lid, ST_DumpPoints(ST_Boundary(geom)) AS pt FROM "{0}"."{2}") as dumps' \
-                  '                 ) ' \
-                  'SELECT ST_SetSRID(geom, %s) AS geom ' \
-                  'FROM segments WHERE geom IS NOT NULL; ' \
-                  'ALTER TABLE "{0}"."{1}" ADD COLUMN wid SERIAL'\
-                 .format(cfg.domain.case_schema, cfg.tables.walls,
-                          cfg.tables.build_new,)
-        cur.execute(sqltext, (cfg.srid_palm,))
-        sql_debug(connection)
-        connection.commit()
-
-        sqltext = 'CREATE INDEX wall_geom_index ON "{0}"."{1}" USING gist(geom)'\
-                  .format(cfg.domain.case_schema, cfg.tables.walls)
-        cur.execute(sqltext)
-        sql_debug(connection)
-        connection.commit()
-
     # TODO: Drop tables convex buildings and segmentized walls
     debug('Droping temporal tables: {},{}', build_conv, build_seg)
 
@@ -610,7 +557,7 @@ def preprocess_building_landcover(cfg, connection, cur):
     debug('Joining corrected tables with original landcover')
     sqltext = 'DROP TABLE IF EXISTS "{0}"."{1}";' \
               'CREATE TABLE "{0}"."{1}" AS ' \
-              'SELECT ll.lid AS lid, 906 AS type, ST_Union(ST_Buffer(ll.geom, 0.00001)) AS geom ' \
+              'SELECT ll.lid AS lid, 906 AS type, (ST_Dump(ST_Union(ST_Buffer(ll.geom, 0.00001)))).geom AS geom ' \
               'FROM ' \
               '   (SELECT lb.lid, ' \
               '       (ST_Dump(ST_Intersection(l.geom, lb.geom))).geom AS geom ' \
@@ -725,6 +672,62 @@ def preprocess_building_landcover(cfg, connection, cur):
 
         sqltext = 'ALTER TABLE "{0}"."{1}" ADD PRIMARY KEY ({2})'\
                   .format(cfg.domain.case_schema, cfg.tables.landcover, cfg.idx.landcover)
+        cur.execute(sqltext)
+        sql_debug(connection)
+        connection.commit()
+
+    # Put generating outer wall and wals here
+
+    progress('Generating outer wall')
+    sqltext = ('DROP TABLE IF EXISTS "{0}"."{1}";' \
+              'CREATE TABLE "{0}"."{1}" AS SELECT ' \
+              'ST_SetSRID(ST_Boundary(ST_Union(geom)), %s) AS geom ' \
+              'FROM "{0}"."{2}"'
+              'WHERE type between 900 and 999'
+               .format(cfg.domain.case_schema, cfg.tables.walls_outer, cfg.tables.landcover,))
+    cur.execute(sqltext, (cfg.srid_palm,))
+    sql_debug(connection)
+    connection.commit()
+
+    sqltext = 'ALTER TABLE "{0}"."{1}" ADD COLUMN {2} SERIAL' \
+              ''.format(cfg.domain.case_schema, cfg.tables.walls_outer, cfg.idx.walls)
+    cur.execute(sqltext)
+    sql_debug(connection)
+    connection.commit()
+
+    sqltext = 'CREATE INDEX wall_outer_geom_index ON "{0}"."{1}" USING gist(geom)'.format(cfg.domain.case_schema, cfg.tables.walls_outer)
+    cur.execute(sqltext)
+    sql_debug(connection)
+    connection.commit()
+
+    # generate outer walls
+    progress('Generating building outer walls')
+    verbose('Check if wall table is present (lod2 case)')
+    sqltext = 'SELECT EXISTS(SELECT * FROM information_schema.tables WHERE table_schema=%s and table_name=%s)'
+    cur.execute(sqltext, (cfg.domain.case_schema, cfg.tables.walls))
+    sql_debug(connection)
+    has_wall = cur.fetchone()[0]
+    if has_wall:
+        pass
+        # TODO if exists join with landcover lid
+    else:
+        sqltext = 'DROP TABLE IF EXISTS "{0}"."{1}"; ' \
+                  'CREATE TABLE "{0}"."{1}" AS  ' \
+                  'WITH segments AS ( ' \
+                  '     SELECT ST_MakeLine(lag((pt).geom, 1, NULL) OVER (PARTITION BY lid ORDER BY lid, (pt).path), (pt).geom) AS geom ' \
+                  '     FROM (SELECT lid, ST_DumpPoints(ST_Boundary(geom)) AS pt FROM "{0}"."{2}" where type between 900 and 999) as dumps' \
+                  '                 ) ' \
+                  'SELECT ST_SetSRID(geom, %s) AS geom ' \
+                  'FROM segments WHERE geom IS NOT NULL; ' \
+                  'ALTER TABLE "{0}"."{1}" ADD COLUMN wid SERIAL'\
+                 .format(cfg.domain.case_schema, cfg.tables.walls,
+                          cfg.tables.landcover,)
+        cur.execute(sqltext, (cfg.srid_palm,))
+        sql_debug(connection)
+        connection.commit()
+
+        sqltext = 'CREATE INDEX wall_geom_index ON "{0}"."{1}" USING gist(geom)'\
+                  .format(cfg.domain.case_schema, cfg.tables.walls)
         cur.execute(sqltext)
         sql_debug(connection)
         connection.commit()
@@ -3118,7 +3121,7 @@ def merge_walls_terrain(cfg, connection, cur):
     # transform into numpy array
     verbose('Transforming coordinates into numpy array')
     wall_coord_np = np.zeros((len(wall_coord), 7, 3), dtype=object)
-    wall_vert = np.zeros(len(wall_coord), dtype=np.int)
+    wall_vert = np.zeros(len(wall_coord), dtype='int')
     for idx, coord in enumerate(wall_coord):
         wall_vert[idx] = len([wc[0] for wc in wall_coord[idx] if wc[0] is not None]) - 1
         wall_coord_np[idx, 0, :] = wall_coord[idx][0]
@@ -3156,7 +3159,7 @@ def merge_walls_terrain(cfg, connection, cur):
     # transform into numpy array
     verbose('Transforming into numpy array')
     terr_coord_np = np.zeros((len(terr_coord), 7, 3), dtype=object)
-    terr_vert = np.zeros(len(terr_coord), dtype=np.int)
+    terr_vert = np.zeros(len(terr_coord), dtype='int')
     for idx, coord in enumerate(terr_coord):
         terr_vert[idx] = len([wc[0] for wc in terr_coord[idx] if wc[0] is not None]) - 1
         terr_coord_np[idx, 0, :] = terr_coord[idx][0]
@@ -4023,7 +4026,7 @@ def merge_local_wall_terrain(i, j, k, wall_coord, terr_coord, wall_vert, terr_ve
             trtw.append(trtw0)
 
     tr_new.append(tr_new[0])
-    vertices = np.asarray(tr_new).astype(np.float)
+    vertices = np.asarray(tr_new).astype('float')
 
     n_vert = vertices.shape[0]
 
@@ -5137,11 +5140,11 @@ def check_for_vertex_singularities(cfg, connection, cur):
         x_vert = np.asarray(x_vert)
         y_vert = np.asarray(y_vert)
         z_vert = np.asarray(z_vert)
-        # ii = ((x_vert - cfg.domain.origin_x) / cfg.domain.dx).astype(np.int)
-        # jj = ((y_vert - cfg.domain.origin_y) / cfg.domain.dy).astype(np.int)
-        # kk = ((z_vert) / cfg.domain.dz).astype(np.int) + 1   # because k = 0 is flat ground
+        # ii = ((x_vert - cfg.domain.origin_x) / cfg.domain.dx).astype('int)
+        # jj = ((y_vert - cfg.domain.origin_y) / cfg.domain.dy).astype('int)
+        # kk = ((z_vert) / cfg.domain.dz).astype('int) + 1   # because k = 0 is flat ground
         k_temp = k - 1
-        corner_id = -1 * np.ones(7, dtype=np.int)
+        corner_id = -1 * np.ones(7, dtype='int')
         for idx in range(len(x_vert)):
             if   (ii[idx] == i)     & (jj[idx] == j)     & (kk[idx] == k_temp)     & (lens[idx] == 0):
                 corner_id[idx] = 0
@@ -5162,11 +5165,11 @@ def check_for_vertex_singularities(cfg, connection, cur):
 
         # now the suspicious points has corner_id != -1 (in range 0 .. 7)
 
-        # sa_corner = np.zeros(8, dtype=np.bool)
+        # sa_corner = np.zeros(8, dtype='bool)
         # adj_corners = corners + np.array([k_temp, j, i])
 
         # assign SOLID/AIR corner, solid = True, Air = False
-        sa_corner = np.ones(8, dtype=np.bool)
+        sa_corner = np.ones(8, dtype='bool')
         adj_corners = corners + np.array([k_temp, j, i])
         for cidx in range(8):
             if norm[0] > 0:
@@ -5742,9 +5745,9 @@ def check_for_vertex_singularities2(cfg, connection, cur):
             kk_new[nv]     = polygons2[npol][nv][3]
 
         # Sort the point, no duplicity
-        sa_corner = np.zeros(8, dtype=np.bool)
+        sa_corner = np.zeros(8, dtype='bool')
         k_temp = k - 1
-        corner_id = -1 * np.ones(7, dtype=np.int)
+        corner_id = -1 * np.ones(7, dtype='int')
         for idx in range(n_vert):
             if   (ii_new[idx] == i)     & (jj_new[idx] == j)     & (kk_new[idx] == k_temp):
                 corner_id[idx] = 0

@@ -99,7 +99,9 @@ check_surface_params(cfg, connection, cur)
 
 check_buildings(cfg, connection, cur, rtabs, vtabs, grid_ext)
 
-if cfg.do_cct and cfg.tables.buildings_height in rtabs: # and not cfg.slanted_pars.create_slanted_mask:
+check_landcover(cfg)
+
+if cfg.do_cct and cfg.tables.buildings_height in rtabs:
     debug('Cut cell topo, Modifying landcover, simplified buildings')
     preprocess_building_landcover(cfg, connection, cur)
 

@@ -32,13 +32,13 @@ domain:
     cent_y: 5547800
 
 default_height:
-    0: 6    # [m]
-    1: 6    # [m] Residential, < 1950	33
-    2: 6    # [m] Residential, 1950 - 2000	33
-    3: 6    # [m] Residential, > 2000	33
-    4: 12   # [m] Office, < 1950	33
-    5: 12   # [m] Office, 1950 - 2000	33
-    6: 12   # [m] Office, > 2000	33
+    0: 16    # [m]
+    1: 16    # [m] Residential, < 1950	33
+    2: 16    # [m] Residential, 1950 - 2000	33
+    3: 16    # [m] Residential, > 2000	33
+    4: 16   # [m] Office, < 1950	33
+    5: 16   # [m] Office, 1950 - 2000	33
+    6: 16   # [m] Office, > 2000	33
 
 # case table names
 tables:
@@ -119,10 +119,16 @@ fill_missing_holes: True
 cortyard_fill:
     apply: False
     count: 30
+    apply_polygon: False
+    polygon_area: 100.0
     
 topo_fill_v2:
     apply: False
     count: 9
+
+flat_terrain:
+    force: False
+    height: 0.0
     
 force_lsm_only: False
 force_cyclic: False
@@ -131,6 +137,8 @@ force_building_boundary: False
 force_building_boundary_dist: 3 # distance in grid points, real distance =* dx
 crop_small_buildings: False  # In case of slanted faces
 small_buildings_area: 20 # Area in grid points
+boundary_fill_1: True
+boundary_fill_2: False
 
 trees:
     lad_reduction: 1.0    # coefficient for reduction of LAD in winter
@@ -219,6 +227,10 @@ ndims:
 landcover_params_var: 'katland'
 
 multipolygon: True
+
+landcover:
+    surface_fractions: False
+    min_fraction: 0.05
 
 ground:
     nzsoil: 8              # number of layers of soil (pavements,...)
