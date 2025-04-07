@@ -117,7 +117,7 @@ def create_slanted_vtk(cfg, connection, cur):
     qp = vtk.vtkPoints()
     qp.SetDataTypeToDouble()
     # qp.SetNumberOfPoints(num_vert)
-    pid = np.zeros(num_vert).astype(np.int)
+    pid = np.zeros(num_vert).astype('int')
     for i in range(num_vert):
         pid[i] = qp.InsertNextPoint(np.array([vertices[0, i], vertices[1, i], vertices[2, i]]))
 

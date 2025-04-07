@@ -25,9 +25,10 @@ Running preprocessor python script and its configuration is documented here: [pr
 The main run of static driver generator with its configuration is documented here: [static driver generator](docs/run_palm_static_driver.md)
 [Tutorial](docs/visuallization.md) how to connection PostgreSQL database with QGIS application and enable interactive visualization.
 Brief description of cut cell topography - slanted faces is documented here: [cut cell topography](docs/cut_cell_topo.md) \
-Buildings 3D, Brief description of processing of buildings 3d are shown [HERE](docs/buildings_3d.md)
-LOD2 input for detailed parameterization of surfaces is documented [HERE](docs/lod2.md)
-Leaf area density calculation is described [HERE]()
+Buildings 3D, Brief description of processing of buildings 3d are shown [HERE](docs/buildings_3d.md) \
+LOD2 input for detailed parameterization of surfaces is documented [HERE](docs/lod2.md) \
+Leaf area density calculation is described [HERE](docs/lad.md) \
+Surface fraction description is [HERE](docs/surf_frac.md)
 
 ## Contributing / Support
 If you wish to use your own dataset with more detailed parameterization, please contact us. We will gladly help with implementation.

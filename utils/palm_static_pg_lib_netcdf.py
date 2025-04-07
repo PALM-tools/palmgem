@@ -255,16 +255,65 @@ def write_type_variable(ncfile, cfg, vn, vln, vt, fill, lod, connection, cur):
     nc_write_attribute(ncfile, vn, 'grid_mapping', 'E_UTM N_UTM lon lat')
     debug('Variable {} ({}) has been written.', vn, vln)
 
+
+def write_surface_fractions(ncfile, cfg, connection, cur):
+    """ Write surface fraction if enabled """
+    vn = 'surface_fraction'
+    vt = 'f8'
+    debug('Processing surface fractions')
+    verbose('Creating dimension')
+    ncfile.createVariable(vn, vt, ('nsurface_fraction', 'y', 'x'), fill_value=cfg.fill_values[vt])
+    nc_write_attribute(ncfile, vn, 'long_name', 'Surface fractions 0 vegetation, 1 pavement, 2 water')
+    nc_write_attribute(ncfile, vn, 'units', '')
+    nc_write_attribute(ncfile, vn, 'res_orig', cfg.domain.dz)
+    nc_write_attribute(ncfile, vn, 'lod', 0)
+    nc_write_attribute(ncfile, vn, 'coordinates', 'E_UTM N_UTM lon lat')
+    nc_write_attribute(ncfile, vn, 'grid_mapping', 'E_UTM N_UTM lon lat')
+
+    fractions = [[0, 'veg_fraction', 'vegetation_type', 'veg_fract_type', 'Vegetation Type'],
+                 [1, 'pav_fraction', 'pavement_type', 'pav_fract_type', 'Pavement Type'],
+                 [2, 'wat_fraction', 'water_type', 'wat_fract_type', 'Water Type']]
+    for it, name_fr, type_name, type_fr, type_full_name in fractions:
+        verbose('Fraction: {}', name_fr)
+
+        sqltext = ('SELECT case when g.{2} > 0.0 then g.{2} else 0.0 end FROM "{0}"."{1}" g '
+                   'ORDER BY g.j, g.i').format(cfg.domain.case_schema, cfg.tables.grid, name_fr)
+        cur.execute(sqltext)
+        sql_debug(connection)
+        res = cur.fetchall()
+
+        res = [cfg.fill_values[vt] if x[0] is None else x[0] for x in res]
+        var = np.reshape(np.asarray([x for x in res], dtype=vt), (cfg.domain.ny, cfg.domain.nx))
+        del res
+        var = np.nan_to_num(var, copy=False, nan=cfg.fill_values[vt], posinf=cfg.fill_values[vt], neginf=cfg.fill_values[vt])
+        ncfile[vn][it, ...] = var
+
+    debug('Variable {} ({}) has been written.', vn, 'Surface fraction')
+
+
+
+
 def write_pavements(ncfile, cfg, connection, cur):
     # write landcover
     vn = 'pavement_type'
     vt = 'b'
-    sqltext = 'select l.type-%s from "{0}"."{1}" g ' \
-              'left outer join "{0}"."{2}" l on l.lid = g.lid and l.type >= %s and l.type < %s ' \
-              'order by g.j, g.i' \
-        .format(cfg.domain.case_schema, cfg.tables.grid, cfg.tables.landcover)
-    cur.execute(sqltext, (cfg.type_range.pavement_min, cfg.type_range.pavement_min, cfg.type_range.pavement_max,))
-    sql_debug(connection)
+    if cfg.landcover.surface_fractions:
+        sqltext = f"""
+            select case when g.pav_fraction > {cfg.landcover.min_fraction} and 
+                             g.pav_fract_type is not null then g.pav_fract_type - %s 
+                   else null end
+            from "{cfg.domain.case_schema}"."{cfg.tables.grid}" g
+            order by g.j, g.i
+        """
+        cur.execute(sqltext, (cfg.type_range.pavement_min,))
+        sql_debug(connection)
+    else:
+        sqltext = 'select l.type-%s from "{0}"."{1}" g ' \
+                  'left outer join "{0}"."{2}" l on l.lid = g.lid and l.type >= %s and l.type < %s ' \
+                  'order by g.j, g.i' \
+            .format(cfg.domain.case_schema, cfg.tables.grid, cfg.tables.landcover)
+        cur.execute(sqltext, (cfg.type_range.pavement_min, cfg.type_range.pavement_min, cfg.type_range.pavement_max,))
+        sql_debug(connection)
     write_type_variable(ncfile, cfg, vn, 'pavement type', vt, cfg.fill_values, 0, connection, cur)
 
     if cfg.visual_check.enabled:
@@ -370,12 +419,23 @@ def write_water(ncfile, cfg, connection, cur):
     # write water surfaces
     vn = "water_type"
     vt = 'b'
-    sqltext = 'select l.type-%s from "{0}"."{1}" g left outer join "{0}"."{2}" l ' \
-              ' on l.lid = g.lid and l.type >= %s and l.type < %s order by g.j, g.i' \
-        .format(cfg.domain.case_schema, cfg.tables.grid, cfg.tables.landcover)
-    cur.execute(sqltext, (cfg.type_range.water_min, cfg.type_range.water_min,
-                          cfg.type_range.water_max,))
-    sql_debug(connection)
+    if cfg.landcover.surface_fractions:
+        sqltext = f"""
+            select case when g.wat_fraction > {cfg.landcover.min_fraction} and 
+                             g.wat_fract_type is not null then g.wat_fract_type - %s 
+                   else null end
+            from "{cfg.domain.case_schema}"."{cfg.tables.grid}" g
+            order by g.j, g.i
+        """
+        cur.execute(sqltext, (cfg.type_range.water_min, ))
+        sql_debug(connection)
+    else:
+        sqltext = 'select l.type-%s from "{0}"."{1}" g left outer join "{0}"."{2}" l ' \
+                  ' on l.lid = g.lid and l.type >= %s and l.type < %s order by g.j, g.i' \
+            .format(cfg.domain.case_schema, cfg.tables.grid, cfg.tables.landcover)
+        cur.execute(sqltext, (cfg.type_range.water_min, cfg.type_range.water_min,
+                              cfg.type_range.water_max,))
+        sql_debug(connection)
     write_type_variable(ncfile, cfg, vn, 'water type', vt, cfg.fill_values, 0, connection, cur)
     if cfg.visual_check.enabled:
         variable_visualization(var=ncfile[vn],
@@ -457,11 +517,22 @@ def write_vegetation(ncfile, cfg, connection, cur):
     # write vegetation surfaces
     vn = "vegetation_type"
     vt = 'b'
-    sqltext = 'select l.type-%s from "{0}"."{1}" g left outer join "{0}"."{2}" l ' \
-              ' on l.lid = g.lid and l.type >= %s and l.type < %s order by g.j, g.i' \
-        .format(cfg.domain.case_schema, cfg.tables.grid, cfg.tables.landcover)
-    cur.execute(sqltext, (cfg.type_range.vegetation_min, cfg.type_range.vegetation_min, cfg.type_range.vegetation_max,))
-    sql_debug(connection)
+    if cfg.landcover.surface_fractions:
+        sqltext = f"""
+            select case when g.veg_fraction > {cfg.landcover.min_fraction} and 
+                             g.veg_fract_type is not null then g.veg_fract_type - %s 
+                   else null end
+            from "{cfg.domain.case_schema}"."{cfg.tables.grid}" g
+            order by g.j, g.i
+        """
+        cur.execute(sqltext, (cfg.type_range.vegetation_min, ))
+        sql_debug(connection)
+    else:
+        sqltext = 'select l.type-%s from "{0}"."{1}" g left outer join "{0}"."{2}" l ' \
+                  ' on l.lid = g.lid and l.type >= %s and l.type < %s order by g.j, g.i' \
+            .format(cfg.domain.case_schema, cfg.tables.grid, cfg.tables.landcover)
+        cur.execute(sqltext, (cfg.type_range.vegetation_min, cfg.type_range.vegetation_min, cfg.type_range.vegetation_max,))
+        sql_debug(connection)
     write_type_variable(ncfile, cfg, vn, 'vegetation type', vt, cfg.fill_values, 0, connection, cur)
     if cfg.visual_check.enabled:
         variable_visualization(var=ncfile[vn],
@@ -528,9 +599,60 @@ def write_soil(ncfile, cfg, connection, cur):
                                var_name=vn, par_id='', text_id='soil_type', path=cfg.visual_check.path,
                                show_plots = cfg.visual_check.show_plots)
 
+    # write soil moisture adjustments: It is not in PIDS, it is our own extension used by our user code
+    # if cfg.lod2 and len(cfg.soil_moisture_adjust._settings) > 0:
+    #     vn = 'soil_moisture_adjust'
+    #     vt = 'f4'
+    #     # first create calculation formula
+    #     sm_text = 'case '
+    #     for lc in cfg.soil_moisture_adjust._settings:
+    #         sm_text = sm_text + 'when l."{0}" = {1} then {2} '.format( \
+    #                   cfg.landcover_params_var, lc, cfg.soil_moisture_adjust._settings[lc])
+    #     sm_text = sm_text + 'else 1 end '
+    #     sqltext = 'select case when l.lid is not null then {0} else null end ' \
+    #               'from "{1}"."{2}" g ' \
+    #               'left outer join "{1}"."{3}" l on l.lid = g.lid and l.type >= %s and l.type < %s order by g.j, g.i' \
+    #         .format(sm_text, cfg.domain.case_schema, cfg.tables.grid, cfg.tables.landcover)
+    #     cur.execute(sqltext, (cfg.type_range.vegetation_min, cfg.type_range.vegetation_max,))
+    #     sql_debug(connection)
+    #     write_type_variable(ncfile, cfg, vn, 'Soil moisture adjust', vt, cfg.fill_values, 0, connection, cur)
+    #     if cfg.visual_check.enabled:
+    #         variable_visualization(var=ncfile[vn],
+    #                                x=np.asarray(ncfile.variables['x']), y=np.asarray(ncfile.variables['y']),
+    #                                var_name=vn, par_id='', text_id='soil_moisture_adjust', path=cfg.visual_check.path,
+    #                                show_plots = cfg.visual_check.show_plots)
+
+def write_mask_usm(ncfile, cfg, connection, cur):
+    """ In case of SLURB, mask buildings with vegetation """
+    progress('Masking buildings in case of SLURB')
+    debug('Create mask')
+    sqltext = 'select case when b.lid is not null then true else false end ' \
+              'from "{0}"."{1}" g ' \
+              'left outer join "{0}"."{2}" b on b.id = g.id order by g.j, g.i' \
+        .format(cfg.domain.case_schema, cfg.tables.grid, cfg.tables.buildings_grid)
+    cur.execute(sqltext)
+    res = cur.fetchall()
+    sql_debug(connection)
+    # res = [False if x[0] is None else True for x in res]
+    res = [x[0] for x in res]
+    slurb_mask = np.reshape(np.asarray([x for x in res], dtype='bool_'), (cfg.domain.ny, cfg.domain.nx))
+    veg_type = ncfile.variables['vegetation_type'][:,:]
+    veg_type[slurb_mask] = 1
+    ncfile.variables['vegetation_type'][:, :] = veg_type
+
+    if cfg.landcover.surface_fractions:
+        debug('Replacing surface fractions')
+        veg_frac = ncfile.variables['surface_fraction'][:, :, :]
+        veg_frac[0, slurb_mask] = 1.0
+        veg_frac[1, slurb_mask] = 0.0 #cfg.fill_values['f4']
+        veg_frac[2, slurb_mask] = 0.0 #cfg.fill_values['f4']
+        ncfile.variables['surface_fraction'][:, :, ] = veg_frac
+
 def write_buildings(ncfile, cfg, connection, cur):
     """ write building_height (buildings_2d), building_id and building_type into netcdf file
     """
+    if cfg.force_lsm_only:
+        return
     sqltext = 'select b.lid from "{0}"."{1}" g ' \
               'left outer join "{0}"."{2}" b on b.id = g.id order by g.j, g.i' \
         .format(cfg.domain.case_schema, cfg.tables.grid, cfg.tables.buildings_grid)
@@ -604,7 +726,7 @@ def write_buildings(ncfile, cfg, connection, cur):
         nc_write_attribute(ncfile, vn, 'source', '')
         nc_write_attribute(ncfile, vn, 'units', '1')
         nc_write_attribute(ncfile, vn, 'lod', 2)
-        var_3d = np.zeros((max_nz, cfg.domain.ny, cfg.domain.nx), dtype=np.int)
+        var_3d = np.zeros((max_nz, cfg.domain.ny, cfg.domain.nx), dtype='int')
 
         verbose('Pull info from server, max height')
         sqltext = 'SELECT b.nz FROM "{0}"."{1}" AS g ' \
@@ -652,7 +774,7 @@ def write_buildings(ncfile, cfg, connection, cur):
         res = cur.fetchall()
         sql_debug(connection)
         res = [cfg.fill_values[vt] if x[0] is None else x[0] for x in res]
-        var_bottom = np.reshape(np.asarray([x for x in res], dtype=np.bool), (cfg.domain.ny, cfg.domain.nx))
+        var_bottom = np.reshape(np.asarray([x for x in res], dtype='bool_'), (cfg.domain.ny, cfg.domain.nx))
         del res
 
         for j in range(cfg.domain.ny):
