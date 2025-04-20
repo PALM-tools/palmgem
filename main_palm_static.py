@@ -162,6 +162,10 @@ create_dim_xy(ncfile, cfg, connection, cur)
 progress('Writing terrain type')
 write_terrain(ncfile, cfg, connection, cur)
 
+if cfg.landcover.surface_fractions:
+    progress('Write fractions')
+    write_surface_fractions(ncfile, cfg, connection, cur)
+
 progress('Writing pavement type')
 write_pavements(ncfile, cfg, connection, cur)
 
@@ -175,12 +179,16 @@ progress('Writing soil type')
 write_soil(ncfile, cfg, connection, cur)
 
 progress('Writing buildings type')
-write_buildings(ncfile, cfg, connection, cur)
-if cfg.lod2:
-    test_building_insulation(cfg, connection, cur)
-    write_building_pars(ncfile, cfg, connection, cur)
-    write_building_surface_pars(ncfile, cfg, connection, cur, vtabs)
-    write_albedo_pars(ncfile, cfg, connection, cur)
+if not cfg.slurb:
+    write_buildings(ncfile, cfg, connection, cur)
+    if cfg.lod2:
+        test_building_insulation(cfg, connection, cur)
+        # write_building_pars(ncfile, cfg, connection, cur)
+        write_building_pars_depricated(ncfile, cfg, connection, cur)
+        write_building_surface_pars(ncfile, cfg, connection, cur, vtabs)
+        write_albedo_pars(ncfile, cfg, connection, cur)
+else:
+    write_mask_usm(ncfile, cfg, connection, cur)
 
 if cfg.has_trees:
     progress('Writing lad, bad')
@@ -201,6 +209,26 @@ check_consistency(ncfile, cfg)
 
 ncfile.close()
 debug('File {} was closed', cfg.domain.static_driver_file)
-progress('Generating of static driver was successfully completed')
+
+if cfg.slurb:
+    progress('Initialize netCDF4 slurb static driver')
+    ncfile_slurb = nc_create_file(cfg.domain.slurb_driver_file)
+
+    progress('Initilize SLURb driver')
+    nc_write_global_attributes_slurb(ncfile_slurb, cfg)
+
+    progress('Write crs for slurb file')
+    nc_write_crs(ncfile_slurb, cfg, connection, cur)
+
+    progress('Write SLURb dimensions')
+    create_slurb_dims(ncfile_slurb, cfg, connection, cur)
+
+    progress('Now create driver for slurb')
+    create_slurb_vars(ncfile_slurb, cfg, connection, cur)
+
+    progress('SLURB driver done')
+    ncfile_slurb.close()
+
+
 
 progress('PALM GEM finished OK')

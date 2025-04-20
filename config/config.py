@@ -210,7 +210,10 @@ def parse_duration(section, item):
     return datetime.timedelta(**d)
 
 
-def load_config(argv, cfg_default_path='config/default_config.yaml', cfg_default_path_share='config/default_share.yaml'):
+def load_config(argv,
+                cfg_default_path='config/default_config.yaml',
+                cfg_default_path_share='config/default_share.yaml',
+                cfg_default_path_slurb='config/default_slurb.yaml'):
     """Loads all configuration.
 
     Configuration is loaded in this order:
@@ -227,6 +230,10 @@ def load_config(argv, cfg_default_path='config/default_config.yaml', cfg_default
 
     # load default configuration
     with open(cfg_default_path, 'r') as f:
+        cfg._ingest_dict(yaml.load(f, Loader=yaml.FullLoader))
+
+    # load default slurb configuration
+    with open(cfg_default_path_slurb, 'r') as f:
         cfg._ingest_dict(yaml.load(f, Loader=yaml.FullLoader))
 
     # load settings from user configfile (if available)
@@ -247,6 +254,14 @@ def load_config(argv, cfg_default_path='config/default_config.yaml', cfg_default
             else:
                 static_driver_file = cfg.domain.name + '_' + cfg.domain.scenario + '_static.nc'
             cfg.domain._settings['static_driver_file'] = os.path.join('output', static_driver_file)
+
+        if cfg.slurb:
+            if not 'slurb_driver_file' in cfg.domain._settings.keys():
+                if cfg.domain.scenario == "":
+                    slurb_driver_file = cfg.domain.name + '_slurb.nc'
+                else:
+                    slurb_driver_file = cfg.domain.name + '_' + cfg.domain.scenario + '_slurb.nc'
+                cfg.domain._settings['slurb_driver_file'] = os.path.join('output', slurb_driver_file)
 
     # name file of visual check according to case_schema
     if 'domain' in cfg._settings.keys():

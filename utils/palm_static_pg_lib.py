@@ -154,8 +154,10 @@ def copy_vectors_from_input(grid_ext, cfg, connection, cur):
 
         params: grid_ext: rectangle polygon around grid, created in calculate_grid_extend function
     """
-    vtables = [cfg.tables.landcover, cfg.tables.roofs, cfg.tables.walls, cfg.tables.trees, cfg.tables.extras_shp]
-    vidx = [cfg.idx.landcover, cfg.idx.roofs, cfg.idx.walls, cfg.idx.trees, cfg.idx.extras_shp]
+    vtables = [cfg.tables.landcover, cfg.tables.roofs, cfg.tables.walls, cfg.tables.trees, cfg.tables.extras_shp,
+               cfg.tables.centerline, cfg.tables.building_area]
+    vidx = [cfg.idx.landcover, cfg.idx.roofs, cfg.idx.walls, cfg.idx.trees, cfg.idx.extras_shp,
+            cfg.idx.centerline, cfg.idx.building_area]
     vtabs = []
     for rel, idx in zip(vtables, vidx):
         # check if table exists in input source schema
@@ -301,6 +303,11 @@ def copy_vectors_from_input(grid_ext, cfg, connection, cur):
         cfg._settings['has_trees'] = True
     else:
         cfg._settings['has_trees'] = False
+
+    if cfg.slurb:
+        if not cfg.tables.centerline in vtabs or not cfg.tables.building_area in vtabs:
+            warning('Centerline or building_area table is missing in input schema, supress option for slurb driver')
+            cfg._settings['slurb'] = False
     return vtabs
 
 def copy_rasters_from_input(grid_ext, cfg, connection, cur):
@@ -619,6 +626,15 @@ def calculate_origin_z_oro_min(cfg, connection, cur):
     connection.commit()
 
 def connect_landcover_grid(cfg, connection, cur):
+    if cfg.slurb:
+        sqltext = 'UPDATE "{0}"."{1}" ' \
+                  'SET type = 101 ' \
+                  'where type < 900'
+        sqltext = sqltext.format(cfg.domain.case_schema, cfg.tables.landcover)
+        cur.execute(sqltext)
+        sql_debug(connection)
+        connection.commit()
+
     """ Join landcover with grid """
     change_log_level(cfg.logs.level_landcover)
     sqltext = 'UPDATE "{0}"."{1}" ' \
@@ -650,6 +666,215 @@ def connect_landcover_grid(cfg, connection, cur):
             warning('Missing grid [id,i,j,xcen,ycen] = [{},{},{},{},{}]', *ms)
     sql_debug(connection)
     connection.commit()
+
+    if cfg.slurb:
+        # Process building only with coverage > default
+        debug('Calculate building fraction')
+        sqltext = f"""
+            create temp table building2drop as 
+            select g.id
+            from "{cfg.domain.case_schema}"."{cfg.tables.grid}" g
+                join "{cfg.domain.case_schema}"."{cfg.tables.landcover}" l on l.lid = g.lid
+            where l.type between {cfg.type_range.building_min} and {cfg.type_range.building_max}
+            group by g.id
+            having SUM(ST_Area(ST_Intersection(g.geom, l.geom))) / {cfg.domain.dx * cfg.domain.dy} < {cfg.min_plan_area}
+            ;
+        """
+        cur.execute(sqltext)
+        sql_debug(connection)
+        connection.commit()
+
+        debug('Replace grids not sufficiently covered by buildings')
+        sqltext = f"""
+        update  "{cfg.domain.case_schema}"."{cfg.tables.grid}" g 
+        set lid = (select l.lid from "{cfg.domain.case_schema}"."{cfg.tables.landcover}" l 
+                     where not l.type between {cfg.type_range.building_min} and {cfg.type_range.building_max}
+                     order by ST_Distance(l.geom, ST_SetSRID(ST_Point(g.xcen,g.ycen), %s)) limit 1)
+        where id in (select id from building2drop)
+        """
+        cur.execute(sqltext, (cfg.srid_palm,))
+        sql_debug(connection)
+        connection.commit()
+
+    # surface fractions
+    if cfg.landcover.surface_fractions:
+        debug('Calculation of surface fraction')
+        # fractions for vegetation, pavement, water
+        verbose('Add surface fraction columns to grid table')
+        sqltext = ('ALTER TABLE "{0}"."{1}" '
+                   'ADD COLUMN IF NOT EXISTS veg_fraction double precision DEFAULT 0.0, '
+                   'ADD COLUMN IF NOT EXISTS wat_fraction double precision DEFAULT 0.0, '
+                   'ADD COLUMN IF NOT EXISTS pav_fraction double precision DEFAULT 0.0, '
+                   'ADD COLUMN IF NOT EXISTS veg_fract_type integer, '
+                   'ADD COLUMN IF NOT EXISTS wat_fract_type integer, '
+                   'ADD COLUMN IF NOT EXISTS pav_fract_type integer, '
+                   'ADD COLUMN IF NOT EXISTS build_fraction boolean DEFAULT FALSE')
+        cur.execute(sqltext.format(cfg.domain.case_schema, cfg.tables.grid))
+        sql_debug(connection)
+        connection.commit()
+
+        verbose('Mark building grid')
+        sqltext = (('UPDATE "{0}"."{1}" g SET '
+                    'build_fraction = TRUE '
+                    'FROM "{0}"."{2}" l '
+                    'WHERE g.lid = l.lid AND l.type BETWEEN 900 AND 999 ')
+                   .format(cfg.domain.case_schema, cfg.tables.grid, cfg.tables.landcover))
+        cur.execute(sqltext)
+        sql_debug(connection)
+        connection.commit()
+
+        verbose('For vegetation')
+        sqltext = (('UPDATE "{0}"."{1}" g SET '
+                    'veg_fraction = s.sum_area '
+                    'FROM ( '
+                    '       SELECT g.id AS gid, SUM(ST_Area(ST_Intersection(g.geom, l.geom))) / {5} AS sum_area '
+                    '       FROM "{0}"."{1}" g'
+                    '       JOIN "{0}"."{2}" l ON ST_Intersects(l.geom, g.geom) '
+                    '       WHERE l.type BETWEEN {3} AND {4} '
+                    '       GROUP BY g.id '
+                    ') AS s '
+                    'WHERE g.id = s.gid '
+                    '      AND NOT g.build_fraction;')
+                   .format(cfg.domain.case_schema, cfg.tables.grid, cfg.tables.landcover,
+                           cfg.type_range.vegetation_min, cfg.type_range.vegetation_max,
+                           cfg.domain.dx * cfg.domain.dy))
+        cur.execute(sqltext)
+        sql_debug(connection)
+        connection.commit()
+
+        sqltext = (('UPDATE "{0}"."{1}" g SET '
+                    'veg_fract_type = ( '
+                    ' SELECT l.type '
+                    ' FROM "{0}"."{2}" l '
+                    ' WHERE ST_Intersects(l.geom, g.geom) '
+                    '       AND l.type BETWEEN {3} AND {4} '
+                    ' ORDER BY ST_Area(ST_Intersection(g.geom, l.geom)) DESC '
+                    ' LIMIT 1'
+                    ') '
+                    'WHERE NOT g.build_fraction ')
+                    .format(cfg.domain.case_schema, cfg.tables.grid, cfg.tables.landcover,
+                            cfg.type_range.vegetation_min, cfg.type_range.vegetation_max))
+        cur.execute(sqltext)
+        sql_debug(connection)
+        connection.commit()
+
+        verbose('For water')
+        sqltext = (('UPDATE "{0}"."{1}" g SET '
+                    'wat_fraction = s.sum_area '
+                    'FROM ( '
+                    '       SELECT g.id AS gid, SUM(ST_Area(ST_Intersection(g.geom, l.geom))) / {5} AS sum_area '
+                    '       FROM "{0}"."{1}" g'
+                    '       JOIN "{0}"."{2}" l ON ST_Intersects(l.geom, g.geom) '
+                    '       WHERE l.type BETWEEN {3} AND {4} '
+                    '       GROUP BY g.id '
+                    ') AS s '
+                    'WHERE g.id = s.gid '
+                    '      AND NOT g.build_fraction;')
+                   .format(cfg.domain.case_schema, cfg.tables.grid, cfg.tables.landcover,
+                           cfg.type_range.water_min, cfg.type_range.water_max,
+                           cfg.domain.dx * cfg.domain.dy))
+        cur.execute(sqltext)
+        sql_debug(connection)
+        connection.commit()
+
+        sqltext = (('UPDATE "{0}"."{1}" g SET '
+                    'wat_fract_type = ( '
+                    ' SELECT l.type '
+                    ' FROM "{0}"."{2}" l '
+                    ' WHERE ST_Intersects(l.geom, g.geom) '
+                    '       AND l.type BETWEEN {3} AND {4} '
+                    ' ORDER BY ST_Area(ST_Intersection(g.geom, l.geom)) DESC '
+                    ' LIMIT 1'
+                    ') '
+                    'WHERE NOT g.build_fraction ')
+                    .format(cfg.domain.case_schema, cfg.tables.grid, cfg.tables.landcover,
+                            cfg.type_range.water_min, cfg.type_range.water_max))
+        cur.execute(sqltext)
+        sql_debug(connection)
+        connection.commit()
+
+        verbose('For pavement')
+        sqltext = (('UPDATE "{0}"."{1}" g SET '
+                    'pav_fraction = s.sum_area '
+                    'FROM ( '
+                    '       SELECT g.id AS gid, SUM(ST_Area(ST_Intersection(g.geom, l.geom))) / {5} AS sum_area '
+                    '       FROM "{0}"."{1}" g'
+                    '       JOIN "{0}"."{2}" l ON ST_Intersects(l.geom, g.geom) '
+                    '       WHERE l.type BETWEEN {3} AND {4} '
+                    '       GROUP BY g.id '
+                    ') AS s '
+                    'WHERE g.id = s.gid '
+                    '      AND NOT g.build_fraction;')
+                   .format(cfg.domain.case_schema, cfg.tables.grid, cfg.tables.landcover,
+                           cfg.type_range.pavement_min, cfg.type_range.pavement_max,
+                           cfg.domain.dx * cfg.domain.dy))
+        cur.execute(sqltext)
+        sql_debug(connection)
+        connection.commit()
+
+        sqltext = (('UPDATE "{0}"."{1}" g SET '
+                    'pav_fract_type = ( '
+                    ' SELECT l.type '
+                    ' FROM "{0}"."{2}" l '
+                    ' WHERE ST_Intersects(l.geom, g.geom) '
+                    '       AND l.type BETWEEN {3} AND {4} '
+                    ' ORDER BY ST_Area(ST_Intersection(g.geom, l.geom)) DESC '
+                    ' LIMIT 1'
+                    ') '
+                    'WHERE NOT g.build_fraction ')
+                   .format(cfg.domain.case_schema, cfg.tables.grid, cfg.tables.landcover,
+                           cfg.type_range.pavement_min, cfg.type_range.pavement_max))
+        cur.execute(sqltext)
+        sql_debug(connection)
+        connection.commit()
+
+        debug('Check minumum fraction {}', cfg.landcover.min_fraction)
+        sqltext = (('UPDATE "{0}"."{1}" set '
+                    'veg_fraction = 0.0 '
+                    'WHERE veg_fraction <= {2}'
+                    '      AND NOT build_fraction')
+                   .format(cfg.domain.case_schema, cfg.tables.grid,
+                           cfg.landcover.min_fraction))
+        cur.execute(sqltext)
+        sql_debug(connection)
+        connection.commit()
+
+        sqltext = (('UPDATE "{0}"."{1}" set '
+                    'wat_fraction = 0.0 '
+                    'WHERE wat_fraction <= {2}'
+                    '      AND NOT build_fraction')
+                   .format(cfg.domain.case_schema, cfg.tables.grid,
+                           cfg.landcover.min_fraction))
+        cur.execute(sqltext)
+        sql_debug(connection)
+        connection.commit()
+
+        sqltext = (('UPDATE "{0}"."{1}" set '
+                    'pav_fraction = 0.0 '
+                    'WHERE pav_fraction <= {2}'
+                    '      AND NOT build_fraction')
+                   .format(cfg.domain.case_schema, cfg.tables.grid,
+                           cfg.landcover.min_fraction))
+        cur.execute(sqltext)
+        sql_debug(connection)
+        connection.commit()
+
+        debug('Checking sum of fractions to 1.0')
+        sqltext = (('UPDATE "{0}"."{1}" set '
+                    '(veg_fraction, wat_fraction, pav_fraction) = '
+                    '(veg_fraction / (veg_fraction + wat_fraction + pav_fraction), '
+                    ' wat_fraction / (veg_fraction + wat_fraction + pav_fraction), '
+                    ' pav_fraction / (veg_fraction + wat_fraction + pav_fraction)) '
+                    'WHERE NOT build_fraction')
+                   .format(cfg.domain.case_schema, cfg.tables.grid))
+        cur.execute(sqltext)
+        sql_debug(connection)
+        connection.commit()
+        # Crop minimum fractions and check fraction to 100%. Also invalidate grids where building is located.
+        # TODO: include building detection in fraction and type checking
+
+        # Last thing is to download it to netcdf
+
 
 def fill_cortyard(cfg, connection, cur):
     """ fill the cortyard that are surrounded by buildings and their size in grid is lower that user defined value """

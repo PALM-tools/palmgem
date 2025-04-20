@@ -74,6 +74,10 @@ def nc_write_global_attributes(ncfile, cfg):
     ncfile.setncattr("source", cfg.ncprops.source)
     ncfile.setncattr("version", cfg.ncprops.version)
 
+def nc_write_global_attributes_slurb(ncfile, cfg):
+    """ Write attributes for SLURb driver """
+    ncfile = nc_write_global_attributes(ncfile, cfg)
+
 def nc_write_crs(ncfile, cfg, connection, cur):
     debug("Writing crs to file...")
     sqltext = 'select srtext from "spatial_ref_sys" where srid = Find_SRID(%s, %s, %s)'
@@ -210,6 +214,503 @@ def create_dim_xy(ncfile, cfg, connection, cur):
         nc_create_dimension(ncfile, name, d)
         temp = ncfile.createVariable(name, 'i', name)
         temp[:] = np.asarray(list(range(d)))
+
+def create_slurb_dims(ncfile, cfg, connection, cur):
+    """ Create SLURb dimensions """
+    sqltext = 'select distinct xcen from "{0}"."{1}" order by xcen'.format(cfg.domain.case_schema, cfg.tables.grid)
+    cur.execute(sqltext)
+    x1d = [x[0] - cfg.domain.origin_x for x in cur.fetchall()]
+    sqltext = 'select distinct ycen from "{0}"."{1}" order by ycen'.format(cfg.domain.case_schema, cfg.tables.grid)
+    cur.execute(sqltext)
+    sql_debug(connection)
+    y1d = [y[0] - cfg.domain.origin_y for y in cur.fetchall()]
+    nxm, nym = len(x1d), len(y1d)
+
+    debug("Writing 2D variables x, y to file...")
+    nc_create_dimension(ncfile, 'x', nxm)
+    nc_create_dimension(ncfile, 'y', nym)
+    vt = 'f8'
+    temp_x = ncfile.createVariable('x', vt, 'x')
+    temp_y = ncfile.createVariable('y', vt, 'y')
+    temp_x[:] = x1d[:]
+    temp_y[:] = y1d[:]
+    del x1d, y1d
+    nc_write_attribute(ncfile, 'x', 'long_name', 'x')
+    nc_write_attribute(ncfile, 'x', 'standard_name', 'projection_x_coordinate')
+    nc_write_attribute(ncfile, 'x', 'units', 'm')
+    nc_write_attribute(ncfile, 'y', 'long_name', 'y')
+    nc_write_attribute(ncfile, 'y', 'standard_name', 'projection_y_coordinate')
+    nc_write_attribute(ncfile, 'y', 'units', 'm')
+
+    debug('Create rest of the dims')
+    for name in cfg.ndims_slurb._settings.keys():
+        d = cfg.ndims_slurb[name]
+        nc_create_dimension(ncfile, name, d)
+        temp = ncfile.createVariable(name, 'i', name)
+        temp[:] = np.asarray(list(range(d)))
+
+def create_slurb_vars(ncfile, cfg, connection, cur):
+    """ Create all necessary slurb related field """
+    # Calculate slurb grid
+    debug('Create slurb grid')
+    sqltext = """
+    drop table if exists "{0}"."{1}";
+    create table "{0}"."{1}" as 
+    select 
+        g.id, 
+        g.i, 
+        g.j, 
+        g.xcen,
+        g.ycen,
+        g.geom, 
+        0.0 as building_plan_area_fraction,
+        0.0 as urban_fraction,
+        273.15 as deep_soil_temperature,
+        {3} :: double precision as building_height,
+        273.15 as building_indoor_temperature,
+        1 as building_type,
+        1 as pavement_type,
+        null :: double precision as building_frontal_area_fraction,
+        null :: double precision as street_canyon_aspect_ratio,
+        null :: double precision as street_canyon_orientation
+    from "{0}"."{2}" g
+    """.format(cfg.domain.case_schema, cfg.tables.grid_slurb, cfg.tables.grid,
+               cfg.default_building_height)
+    cur.execute(sqltext)
+    sql_debug(connection)
+    connection.commit()
+
+    debug('Calculate building fraction')
+    sqltext = (('UPDATE "{0}"."{1}" g SET '
+                'building_plan_area_fraction = least(0.988, coalesce(s.sum_area)) '
+                'FROM ( '
+                '       SELECT g.id AS gid, SUM(ST_Area(ST_Intersection(g.geom, l.geom))) / {5} AS sum_area '
+                '       FROM "{0}"."{1}" g'
+                '       JOIN "{0}"."{2}" l ON ST_Intersects(l.geom, g.geom) '
+                '       WHERE l.type BETWEEN {3} AND {4} '
+                '       GROUP BY g.id '
+                ') AS s '
+                'WHERE g.id = s.gid;').format(cfg.domain.case_schema, cfg.tables.grid_slurb, cfg.tables.landcover,
+                                                          900, 999, cfg.domain.dx * cfg.domain.dy))
+    cur.execute(sqltext)
+    sql_debug(connection)
+    connection.commit()
+
+    debug('Calculation of urban_fraction')
+    sqltext = (('UPDATE "{0}"."{1}" g SET '
+                'urban_fraction = least(1.0, s.sum_area) '
+                'FROM ( '
+                '       SELECT g.id AS gid, SUM(ST_Area(ST_Intersection(g.geom, l.geom))) / {5} AS sum_area '
+                '       FROM "{0}"."{1}" g'
+                '       JOIN "{0}"."{2}" l ON ST_Intersects(l.geom, g.geom) '
+                '       WHERE l.type BETWEEN {3} AND {4} '
+                '          or l.type between {6} and {7}'
+                '       GROUP BY g.id '
+                ') AS s '
+                'WHERE g.id = s.gid;').format(cfg.domain.case_schema, cfg.tables.grid_slurb, cfg.tables.landcover,
+                                                          900, 999, cfg.domain.dx * cfg.domain.dy,
+                                              200, 299))
+    cur.execute(sqltext)
+    sql_debug(connection)
+    connection.commit()
+
+    # debug('Remove grid cell with lower building fraction')
+    sqltext = """
+    delete from "{0}"."{1}" gs
+    where gs.building_plan_area_fraction < {2}    
+    """.format(cfg.domain.case_schema, cfg.tables.grid_slurb, cfg.min_plan_area)
+    cur.execute(sqltext)
+    sql_debug(connection)
+    connection.commit()
+
+    # sqltext = """
+    # update "{0}"."{1}"
+    # set building_plan_area_fraction = 0.0
+    # where building_plan_area_fraction < {2}
+    # """.format(cfg.domain.case_schema, cfg.tables.grid_slurb, cfg.min_plan_area)
+    # cur.execute(sqltext)
+    # sql_debug(connection)
+    # connection.commit()
+
+    # Now include all relevant information inside this grid_slurb table
+
+    # deep_soil_temperature
+    debug('Updating deep soil temperature')
+    sqltext = """
+    update "{0}"."{1}" gs 
+    set deep_soil_temperature = {2}
+    """.format(cfg.domain.case_schema, cfg.tables.grid_slurb, cfg.deep_soil_temperature_default)
+    cur.execute(sqltext)
+    sql_debug(connection)
+    connection.commit()
+
+    # building_height
+    debug('Calculation of building height in grid cell')
+    if cfg.has_buildings:
+        sqltext = """
+        with grid_height as (
+            select 
+                gs.id as id,
+                a.height
+            from "{0}"."{1}" gs
+                join lateral (select AVG(ST_NearestValue(rast, ST_SetSRID(ST_Point(gs.xcen,gs.ycen), %s))) AS height
+                              FROM "{0}"."{2}"
+                              WHERE ST_Intersects(rast, gs.geom)) a on true
+        )
+        update "{0}"."{1}" gs 
+        set building_height = gh.height
+        from grid_height gh
+        where gh.id = gs.id
+        """.format(cfg.domain.case_schema, cfg.tables.grid_slurb, cfg.tables.buildings_height)
+        cur.execute(sqltext, (cfg.srid_palm,))
+        sql_debug(connection)
+        connection.commit()
+
+    # building_indoor_temperature
+    debug('Updating building indoor temperature')
+    sqltext = """
+    update "{0}"."{1}" gs 
+    set building_indoor_temperature = {2}
+    """.format(cfg.domain.case_schema, cfg.tables.grid_slurb, cfg.building_indoor_temperature_default)
+    cur.execute(sqltext)
+    sql_debug(connection)
+    connection.commit()
+
+    # building_type
+    debug('Calculation of building type')
+    sqltext = """
+    with grid_type as (
+        select 
+            gs.id as id,
+            a.g_type - {2} as g_type
+        from "{0}"."{1}" gs
+            join lateral (select 
+                             PERCENTILE_CONT(0.5) WITHIN GROUP(ORDER BY l.type) as g_type
+                             --l.type as g_type
+                          FROM "{0}".{4} l 
+                          WHERE ST_Intersects(l.geom, gs.geom)
+                            and l.type between {2} and {3}) a on true
+    )
+    update "{0}"."{1}" gs 
+    set building_type = gt.g_type
+    from grid_type gt
+    where gt.id = gs.id
+    """.format(cfg.domain.case_schema, cfg.tables.grid_slurb, cfg.type_range.building_min, cfg.type_range.building_max,
+               cfg.tables.landcover)
+    cur.execute(sqltext, (cfg.srid_palm, ))
+    sql_debug(connection)
+    connection.commit()
+
+    # pavement_type
+    debug('Calculation of pavement_type')
+    sqltext = """
+    with grid_type as (
+        select 
+            gs.id as id,
+            a.g_type - {2} as g_type
+        from "{0}"."{1}" gs
+            join lateral (select 
+                             PERCENTILE_CONT(0.5) WITHIN GROUP(ORDER BY l.type) as g_type
+                             --l.type as g_type
+                          FROM "{0}".{4} l 
+                          WHERE ST_Intersects(l.geom, gs.geom)
+                            and l.type between {2} and {3}) a on true
+    )
+    update "{0}"."{1}" gs 
+    set pavement_type = 1 --gt.g_type
+    from grid_type gt
+    where gt.id = gs.id
+    """.format(cfg.domain.case_schema, cfg.tables.grid_slurb, cfg.type_range.pavement_min, cfg.type_range.pavement_max,
+               cfg.tables.landcover)
+    cur.execute(sqltext)
+    sql_debug(connection)
+    connection.commit()
+
+    # building_frontal_area_fraction
+    sqltext = """
+    with fraction as (
+        select
+            gs.id, 
+            sum(st_area(st_intersection(ba.geom, gs.geom)) / ba.roof_area * (wall_area + roof_area) / {3}) as f_area
+        from "{0}"."{1}" gs
+            join "{0}"."{2}" ba on st_intersects(ba.geom, gs.geom) 
+        group by gs.id
+    )
+    update "{0}"."{1}" gs 
+    set building_frontal_area_fraction  = least(f.f_area, 0.99)
+    from fraction f
+    where f.id = gs.id
+    """.format(cfg.domain.case_schema, cfg.tables.grid_slurb, cfg.tables.building_area,
+               cfg.domain.dx * cfg.domain.dy)
+    cur.execute(sqltext)
+    sql_debug(connection)
+    connection.commit()
+
+    # street_canyon_aspect_ratio
+    sqltext = """
+    with subquery as (
+        select 
+            gs.id as id,
+            a.hw
+        from "{0}"."{1}" gs
+            join lateral (select 
+                             AVG(((c.val_1 + c.val_2) / 2) / c.width) as hw
+                          FROM "{0}"."{2}" c 
+                          WHERE ST_Intersects(c.geom, gs.geom)) a on true
+    )
+    update "{0}"."{1}" gs 
+    set street_canyon_aspect_ratio  = s.hw
+    from subquery s
+    where s.id = gs.id
+    """.format(cfg.domain.case_schema, cfg.tables.grid_slurb, cfg.tables.centerline)
+    cur.execute(sqltext)
+    sql_debug(connection)
+    connection.commit()
+
+    # Update street canyon where not filled, take from nearest
+    sqltext = f"""
+    update "{cfg.domain.case_schema}"."{cfg.tables.grid_slurb}" gs
+    set street_canyon_aspect_ratio = (select street_canyon_aspect_ratio 
+                                      from "{cfg.domain.case_schema}"."{cfg.tables.grid_slurb}" gss
+                                      where gss.street_canyon_aspect_ratio is not null
+                                      order by ST_Distance(gss.geom, gs.geom) 
+                                      limit 1)
+    where street_canyon_aspect_ratio is null
+    """
+    cur.execute(sqltext)
+    sql_debug(connection)
+    connection.commit()
+
+    # street_canyon_orientation
+    sqltext = """
+    with subquery as (
+        select 
+            gs.id as id,
+            a.orientation
+        from "{0}"."{1}" gs
+            join lateral (select 
+                             ATAN2(AVG(SIN(orientation * PI() / 180.0)), 
+                                   AVG(COS(orientation * PI() / 180.0))
+                                   ) * 180.0 / PI() as orientation
+                          FROM "{0}"."{2}" c 
+                          WHERE ST_Intersects(c.geom, gs.geom)) a on true
+    )
+    update "{0}"."{1}" gs 
+    set street_canyon_orientation = 
+        case when s.orientation < 0.0 then s.orientation + 360.0
+             when s.orientation > 360.0 then s.orientation - 360.0
+             else s.orientation
+             end
+    from subquery s
+    where s.id = gs.id
+    """.format(cfg.domain.case_schema, cfg.tables.grid_slurb, cfg.tables.centerline)
+    cur.execute(sqltext)
+    sql_debug(connection)
+    connection.commit()
+
+    # Update street canyon where not filled, take from nearest
+    sqltext = f"""
+    update "{cfg.domain.case_schema}"."{cfg.tables.grid_slurb}" gs
+    set street_canyon_orientation = (select street_canyon_orientation 
+                                      from "{cfg.domain.case_schema}"."{cfg.tables.grid_slurb}" gss
+                                      where gss.street_canyon_orientation is not null
+                                      order by ST_Distance(gss.geom, gs.geom) 
+                                      limit 1)
+    where street_canyon_orientation is null
+    """
+    cur.execute(sqltext)
+    sql_debug(connection)
+    connection.commit()
+
+    # Urban fraction must be filled everywhere
+    debug('Filling urban fraction')
+    vn = 'urban_fraction'
+    vt = cfg.slurb_vars[vn].vt
+    long_name = cfg.slurb_vars[vn].long_name
+
+    sqltext = """
+        select coalesce(sg.{3}, 0.0) 
+        from "{0}"."{1}" g
+            left join "{0}"."{2}" sg on sg.id = g.id 
+        order by g.j, g.i
+    """.format(cfg.domain.case_schema, cfg.tables.grid, cfg.tables.grid_slurb, vn)
+    cur.execute(sqltext)
+    sql_debug(connection)
+
+    write_type_variable(ncfile, cfg, vn, long_name, vt, cfg.fill_values, 0, connection, cur)
+
+    # Download to netcdf format and insert into driver
+    progress('Insert slurb variables into netcdf file')
+    for vn in cfg.slurb_vars_done:
+        debug('Processing slurb variable: {}', vn)
+        vt = cfg.slurb_vars[vn].vt
+        long_name = cfg.slurb_vars[vn].long_name
+
+        sqltext = """
+            select sg.{3} 
+            from "{0}"."{1}" g
+                left join "{0}"."{2}" sg on sg.id = g.id 
+            order by g.j, g.i
+        """.format(cfg.domain.case_schema, cfg.tables.grid, cfg.tables.grid_slurb, vn)
+        cur.execute(sqltext)
+        sql_debug(connection)
+
+        write_type_variable(ncfile, cfg, vn, long_name, vt, cfg.fill_values, 0, connection, cur)
+
+    # Fetch mask
+    sqltext = """
+        select 
+            case when sg.id is not null then True else False end
+        from "{0}"."{1}" g
+            left join "{0}"."{2}" sg on sg.id = g.id 
+        order by g.j, g.i
+    """.format(cfg.domain.case_schema, cfg.tables.grid, cfg.tables.grid_slurb)
+    cur.execute(sqltext)
+    res = cur.fetchall()
+    sql_debug(connection)
+    # res = [False if x[0] is None else True for x in res]
+    res = [x[0] for x in res]
+    slurb_mask = np.reshape(np.asarray([x for x in res], dtype='bool_'), (cfg.domain.ny, cfg.domain.nx))
+
+    # Has xy dim
+    yx_dims = [
+     ['albedo_road', 0.10],
+     ['albedo_roof', 0.17],
+     ['albedo_wall', 0.12],
+     ['albedo_window', 0.12],
+     ['emiss_road', 0.90],
+     ['emiss_roof', 0.90],
+     ['emiss_wall', 0.8],
+     ['emiss_window', 0.8],
+     ['window_fraction', 0.1],
+     ['z0_road', 0.002],
+     ['z0_roof', 0.002],
+     ['z0_urb', 0.002],
+     ['z0_wall', 0.002],
+     ['z0_window', 0.00001],
+     ['z0h_roof', 0.002],
+     ['z0h_road', 0.002],
+     ['z0h_urb', 0.002],
+     ['z0h_wall', 0.002],
+     ['z0h_window', 0.00001],
+    ]
+
+    for vn, def_val in yx_dims:
+        vt = cfg.slurb_vars[vn].vt
+        long_name = cfg.slurb_vars[vn].long_name
+        vn_units = cfg.slurb_vars[vn].units
+
+        ncfile.createVariable(vn, vt, ('y', 'x'), fill_value=cfg.fill_values[vt])
+        fill_var = np.ones((cfg.domain.ny, cfg.domain.nx)) * cfg.fill_values[vt]
+        fill_var[slurb_mask] = def_val
+        ncfile[vn][...] = fill_var
+        # ncfile[vn][...] = slurb_mask * cfg.fill_values[vt]
+
+        nc_write_attribute(ncfile, vn, 'long_name', long_name)
+        nc_write_attribute(ncfile, vn, 'units', vn_units)
+        nc_write_attribute(ncfile, vn, 'res_orig', cfg.domain.dz)
+        nc_write_attribute(ncfile, vn, 'coordinates', 'E_UTM N_UTM lon lat')
+        nc_write_attribute(ncfile, vn, 'grid_mapping', 'E_UTM N_UTM lon lat')
+
+    # other dims
+    # nroadyx
+    nroadyx_dims = [
+     ['c_road', 1.5e6],
+     ['dz_road', 0.5],
+     ['lambda_road', 0.12]
+    ]
+
+    for vn, def_val in nroadyx_dims:
+        vt = cfg.slurb_vars[vn].vt
+        long_name = cfg.slurb_vars[vn].long_name
+        vn_units = cfg.slurb_vars[vn].units
+
+        ncfile.createVariable(vn, vt, ('nroad_3d', 'y', 'x'), fill_value=cfg.fill_values[vt])
+        fill_var = np.ones((cfg.domain.ny, cfg.domain.nx)) * cfg.fill_values[vt]
+        fill_var[slurb_mask] = def_val
+        for idim in range(cfg.ndims_slurb.nroad_3d):
+            ncfile[vn][idim, :, :] = fill_var
+
+        nc_write_attribute(ncfile, vn, 'long_name', long_name)
+        nc_write_attribute(ncfile, vn, 'units', vn_units)
+        nc_write_attribute(ncfile, vn, 'res_orig', cfg.domain.dz)
+        nc_write_attribute(ncfile, vn, 'coordinates', 'E_UTM N_UTM lon lat')
+        nc_write_attribute(ncfile, vn, 'grid_mapping', 'E_UTM N_UTM lon lat')
+
+    # nroofyx
+    nroofyx_dims = [
+     ['c_roof', 1.52e6],
+     ['dz_roof', 0.5],
+     ['lambda_roof', 0.12],
+    ]
+
+    for vn, def_val in nroofyx_dims:
+        vt = cfg.slurb_vars[vn].vt
+        long_name = cfg.slurb_vars[vn].long_name
+        vn_units = cfg.slurb_vars[vn].units
+
+        ncfile.createVariable(vn, vt, ('nroof_3d', 'y', 'x'), fill_value=cfg.fill_values[vt])
+        fill_var = np.ones((cfg.domain.ny, cfg.domain.nx)) * cfg.fill_values[vt]
+        fill_var[slurb_mask] = def_val
+        for idim in range(cfg.ndims_slurb.nroof_3d):
+            ncfile[vn][idim, :, :] = fill_var
+
+        nc_write_attribute(ncfile, vn, 'long_name', long_name)
+        nc_write_attribute(ncfile, vn, 'units', vn_units)
+        nc_write_attribute(ncfile, vn, 'res_orig', cfg.domain.dz)
+        nc_write_attribute(ncfile, vn, 'coordinates', 'E_UTM N_UTM lon lat')
+        nc_write_attribute(ncfile, vn, 'grid_mapping', 'E_UTM N_UTM lon lat')
+
+
+    # nwallyx
+    nwallyx_dims = [
+     ['c_wall', 1.5e6],
+     ['dz_wall', 0.5],
+     ['lambda_wall', 0.9],
+    ]
+
+    for vn, def_val in nwallyx_dims:
+        vt = cfg.slurb_vars[vn].vt
+        long_name = cfg.slurb_vars[vn].long_name
+        vn_units = cfg.slurb_vars[vn].units
+
+        ncfile.createVariable(vn, vt, ('nwall_3d', 'y', 'x'), fill_value=cfg.fill_values[vt])
+        fill_var = np.ones((cfg.domain.ny, cfg.domain.nx)) * cfg.fill_values[vt]
+        fill_var[slurb_mask] = def_val
+        for idim in range(cfg.ndims_slurb.nwall_3d):
+            ncfile[vn][idim, :, :] = fill_var
+
+        nc_write_attribute(ncfile, vn, 'long_name', long_name)
+        nc_write_attribute(ncfile, vn, 'units', vn_units)
+        nc_write_attribute(ncfile, vn, 'res_orig', cfg.domain.dz)
+        nc_write_attribute(ncfile, vn, 'coordinates', 'E_UTM N_UTM lon lat')
+        nc_write_attribute(ncfile, vn, 'grid_mapping', 'E_UTM N_UTM lon lat')
+
+    # nwinyx
+    nwinyx_dims = [
+     ['c_window', 1.7e6],
+     ['dz_window', 0.02],
+     ['lambda_window', 0.4],
+    ]
+
+    for vn, def_val in nwinyx_dims:
+        debug(vn)
+        vt = cfg.slurb_vars[vn].vt
+        long_name = cfg.slurb_vars[vn].long_name
+        vn_units = cfg.slurb_vars[vn].units
+
+        ncfile.createVariable(vn, vt, ('nwin_3d', 'y', 'x'), fill_value=cfg.fill_values[vt])
+        fill_var = np.ones((cfg.domain.ny, cfg.domain.nx)) * cfg.fill_values[vt]
+        fill_var[slurb_mask] = def_val
+        for idim in range(cfg.ndims_slurb.nwin_3d):
+            ncfile[vn][idim, :, :] = fill_var
+
+        nc_write_attribute(ncfile, vn, 'long_name', long_name)
+        nc_write_attribute(ncfile, vn, 'units', vn_units)
+        nc_write_attribute(ncfile, vn, 'res_orig', cfg.domain.dz)
+        nc_write_attribute(ncfile, vn, 'coordinates', 'E_UTM N_UTM lon lat')
+        nc_write_attribute(ncfile, vn, 'grid_mapping', 'E_UTM N_UTM lon lat')
+
 
 def write_terrain(ncfile, cfg, connection, cur):
     # write topography
