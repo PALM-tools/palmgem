@@ -1,0 +1,348 @@
+slurb: False
+
+# default dimensions
+ndims_slurb:
+    nroad_3d: 4
+    nroof_3d: 4
+    nwall_3d: 4
+    nwin_3d: 4
+
+# common values
+center_line_length: 15.0 # m
+building_outer_wall_lenght: 15.0 # m
+default_building_height: 20.0 # m
+
+# general rules
+min_plan_area: 0.2  # fraction of buildings where slurm is applied, else use LSM only
+
+# define variable with attributes
+slurb_vars_done: [
+    'deep_soil_temperature',
+    'building_frontal_area_fraction',
+    'building_height',
+    'building_indoor_temperature',
+    'building_plan_area_fraction',
+    'building_type',
+    'pavement_type',
+    'street_canyon_aspect_ratio',
+    'street_canyon_orientation'
+    ]
+slurb_vars:
+    deep_soil_temperature:
+        vt: 'f8'
+        long_name: 'deep soil temperature'
+        units: 'K'
+        dims: 'yx'
+        
+    building_frontal_area_fraction:
+        vt: 'f8'
+        long_name: 'building frontal area fraction'
+        units: '1'
+        dims: 'yx'
+    
+    building_height:
+        vt: 'f8'
+        long_name: 'mean building height'
+        units: 'm'
+        dims: 'yx'
+    
+    building_indoor_temperature:
+        vt: 'f8'
+        long_name: 'indoor air temperature'
+        units: 'K'
+        dims: 'yx'
+    
+    building_plan_area_fraction:
+        vt: 'f8'
+        long_name: 'building plan area fraction'
+        units: '1'
+        dims: 'yx'
+    
+    building_type:
+        vt: 'b'
+        long_name: 'building type classification'
+        units: '1'
+        dims: 'yx'
+        
+    pavement_type:
+        vt: 'b'
+        long_name: 'pavement type classification'
+        units: '1'
+        dims: 'yx'
+    
+    street_canyon_aspect_ratio:
+        vt: 'f8'
+        long_name: 'street canyon aspect ratio'
+        units: '1'
+        dims: 'yx'
+    
+    street_canyon_orientation:
+        vt: 'f8'
+        long_name: 'street canyon orientation angle'
+        units: '1'
+        dims: 'yx'
+        
+    urban_fraction:
+        vt: 'f8'
+        long_name: 'urban plan area fraction'
+        units: '1'
+        dims: 'yx'
+        
+    # Additional info
+    albedo_road:
+        vt: 'f8'
+        long_name: 'road surface shortwave albedo'
+        units: '1'
+        dims: 'yx'
+        
+    albedo_roof:
+        vt: 'f8'
+        long_name: 'roof surface shortwave albedo'
+        units: '1'
+        dims: 'yx'
+        
+    albedo_wall:
+        vt: 'f8'
+        long_name: 'wall surface shortwave albedo'
+        units: '1'
+        dims: 'yx'
+        
+    albedo_window:
+        vt: 'f8'
+        long_name: 'window surface shortwave albedo'
+        units: '1'
+        dims: 'yx'
+        
+    c_road:
+        vt: 'f8'
+        long_name: 'road layer volumetric heat capacity'
+        units: 'J/m3/K'
+        dims: 'nroadyx'
+        
+    c_roof:
+        vt: 'f8'
+        long_name: 'roof layer volumetric heat capacity'
+        units: 'J/m3/K'
+        dims: 'nroofyx'
+        
+    c_wall:
+        vt: 'f8'
+        long_name: 'wall layer volumetric heat capacity'
+        units: 'J/m3/K'
+        dims: 'nwallyx'
+        
+    c_window:
+        vt: 'f8'
+        long_name: 'window layer volumetric heat capacity'
+        units: 'J/m3/K'
+        dims: 'nwinyx'
+        
+    dz_road:
+        vt: 'f8'
+        long_name: 'road layer thickness'
+        units: 'm'
+        dims: 'nroadyx'
+        
+    dz_roof:
+        vt: 'f8'
+        long_name: 'roof layer thickness'
+        units: 'm'
+        dims: 'nroofyx'
+        
+    dz_wall:
+        vt: 'f8'
+        long_name: 'wall layer thickness'
+        units: 'm'
+        dims: 'nwallyx'
+        
+    dz_window:
+        vt: 'f8'
+        long_name: 'window layer thickness'
+        dims: 'nwinyx'
+        units: 'm'
+        
+    emiss_road:
+        vt: 'f8'
+        long_name: 'road surface emissivity'
+        units: '1'
+        dims: 'yx'
+        
+    emiss_roof:
+        vt: 'f8'
+        long_name: 'roof surface emissivity'
+        units: '1'
+        dims: 'yx'
+        
+    emiss_wall:
+        vt: 'f8'
+        long_name: 'wall surface emissivity'
+        units: '1'
+        dims: 'yx'
+        
+    emiss_window:
+        vt: 'f8'
+        long_name: 'window surface emissivity'
+        units: '1'
+        dims: 'yx'
+        
+    lambda_road:
+        vt: 'f8'
+        long_name: 'road layer thermal conductivity'
+        units: 'W/m/K'
+        dims: 'nroadyx'
+        
+    lambda_roof:
+        vt: 'f8'
+        long_name: 'roof layer thermal conductivity'
+        units: 'W/m/K'
+        dims: 'nroofyx'
+        
+    lambda_wall:
+        vt: 'f8'
+        long_name: 'wall layer thermal conductivity'
+        units: 'W/m/K'
+        dims: 'nwallyx'
+        
+    lambda_window:
+        vt: 'f8'
+        long_name: 'window layer thermal conductivity'
+        units: 'W/m/K'
+        dims: 'nwinyx'
+        
+    qsws_external:
+        vt: 'f8'
+        long_name: 'latent heat flux from external sources'
+        units: 'W/m^2'
+        
+    shf_external:
+        vt: 'f8'
+        long_name: 'sensible heat flux from external sources'
+        units: 'W/m^2'
+        
+    shf_traffic:
+        vt: 'f8'
+        long_name: 'sensible heat flux from traffic'
+        units: 'W/m^2'
+        
+    transmissivity_window:
+        vt: 'f8'
+        long_name: 'window layer shortwave transmissivity'
+        units: '1'
+        
+    window_fraction:
+        vt: 'f8'
+        long_name: 'window fraction'
+        units: '1'
+        dims: 'yx'
+        
+    z0_road:
+        vt: 'f8'
+        long_name: 'road surface aerodynamic roughness length for momentum'
+        units: 'm'
+        dims: 'yx'
+        
+    z0_roof:
+        vt: 'f8'
+        long_name: 'roof surface aerodynamic roughness length for momentum'
+        units: 'm'
+        dims: 'yx'
+        
+    z0_urb:
+        vt: 'f8'
+        long_name: 'urban roughness length for momentum'
+        units: 'm'
+        dims: 'yx'
+        
+    z0_wall:
+        vt: 'f8'
+        long_name: 'wall surface aerodynamic roughness length for momentum'
+        units: 'm'
+        dims: 'yx'
+        
+    z0_window:
+        vt: 'f8'
+        long_name: 'window surface aerodynamic roughness length for momentum'
+        units: 'm'
+        dims: 'yx'
+        
+    z0h_road:
+        vt: 'f8'
+        long_name: 'road surface aerodynamic roughness length heat'
+        units: 'm'
+        dims: 'yx'
+        
+    z0h_roof:
+        vt: 'f8'
+        long_name: 'roof surface aerodynamic roughness length heat'
+        units: 'm'
+        dims: 'yx'
+        
+    z0h_urb:
+        vt: 'f8'
+        long_name: 'urban surface aerodynamic roughness length heat'
+        units: 'm'
+        dims: 'yx'
+        
+    z0h_wall:
+        vt: 'f8'
+        long_name: 'wall surface aerodynamic roughness length heat'
+        units: 'm'
+        dims: 'yx'
+        
+    z0h_window:
+        vt: 'f8'
+        long_name: 'windows surface aerodynamic roughness length heat'
+        units: 'm'
+        dims: 'yx'
+        
+
+
+
+# first iteration, fill these:
+
+# deep_soil_temperature
+deep_soil_temperature_default: 275.0 # K
+
+# building_frontal_area_fraction
+
+# building_height
+
+# building_indoor_temperature
+building_indoor_temperature_default: 300 # K
+
+# building_plan_area_fraction
+
+# building_type
+
+# pavement_type
+
+# street_canyon_aspect_ratio
+
+# street_canyon_orientation
+
+# In first iteration, fill those with some default values
+# albedo road
+
+# albedo roof
+
+# albedo wall
+
+# albedo window
+
+# c
+
+# lambda
+
+# dz
+
+# emis
+
+# z0
+
+# z0h
+
+# transmissivity_window
+
+# urban_fraction
+
+# window_fraction

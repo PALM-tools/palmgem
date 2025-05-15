@@ -77,6 +77,9 @@ tables:
     surface_params:         'surface_params'
     building_walls:         'building_walls'
     surfaces:               'surfaces'
+    centerline:             'centerline'
+    building_area:          'building_area'
+    grid_slurb:             'grid_slurb'
     lai:                    'lai'
     canopy_height:          'canopy_height'
     
@@ -87,6 +90,8 @@ idx:
     trees:     'sid'
     buildings_depth_shp: 'gid'
     extras_shp: 'gid'
+    centerline: 'gid'
+    building_area: 'id'
     
 build_3d:
     bridge_width: 2.0

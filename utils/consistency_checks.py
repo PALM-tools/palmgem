@@ -26,8 +26,12 @@ def check_consistency(ncfile, cfg):
     change_log_level(cfg.logs.level_check_consistency)
     progress('Checking consistency ...')
     pavement_type_default = 2
-    mask = (ncfile.variables['vegetation_type'][:,:].mask & ncfile.variables['pavement_type'][:,:].mask & \
-            ncfile.variables['building_type'][:,:].mask & ncfile.variables['water_type'][:,:].mask )
+    if cfg.force_lsm_only or cfg.slurb:
+        mask = (ncfile.variables['vegetation_type'][:, :].mask & ncfile.variables['pavement_type'][:, :].mask & \
+                ncfile.variables['water_type'][:, :].mask)
+    else:
+        mask = (ncfile.variables['vegetation_type'][:,:].mask & ncfile.variables['pavement_type'][:,:].mask & \
+                ncfile.variables['building_type'][:,:].mask & ncfile.variables['water_type'][:,:].mask )
     missing_values = np.sum(mask)
     if missing_values > 0:
         warning('There are {} missing values that were filled with default pavement type {}',
