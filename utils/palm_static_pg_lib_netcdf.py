@@ -1460,7 +1460,153 @@ def write_lad_grid(ncfile, cfg, connection, cur):
         bad = 0.1 * lad
         ncfile.variables['bad'][nz, :, :] = bad
 
+def create_var(cfg, ncfile, var_name, v_type, dims, long_name='', units=''):
+    """ """
+    ncfile.createVariable(var_name, v_type, dims, fill_value=cfg.fill_values[v_type])
+    nc_write_attribute(ncfile, var_name, 'long_name', long_name)
+    nc_write_attribute(ncfile, var_name, 'units', units)
+    nc_write_attribute(ncfile, var_name, 'res_orig', cfg.domain.dz)
+    nc_write_attribute(ncfile, var_name, 'coordinates', 'E_UTM N_UTM lon lat')
+    nc_write_attribute(ncfile, var_name, 'grid_mapping', 'E_UTM N_UTM lon lat')
+
+def fetch_building_parameters(ncfile, cfg, vn, par, cfg_par, cur, connection, vt):
+    """ Fetch building parameters """
+    sqltext = f"""
+        select 
+            distinct on (g.i, g.j)
+            case when b.id is not null then {cfg_par} else null end
+        from "{cfg.domain.case_schema}"."{cfg.tables.grid}" g
+            left outer join "{cfg.domain.case_schema}"."{cfg.tables.buildings_grid}" b on b.id = g.id
+            left outer join "{cfg.domain.case_schema}"."{cfg.tables.roofs}" r on r.gid = b.rid
+            left outer join "{cfg.domain.case_schema}"."{cfg.tables.surface_params}" pr on pr.code = cast(r.material as integer)+%s
+            left outer join "{cfg.domain.case_schema}"."{cfg.tables.building_walls}" bw on bw.id = g.id and not bw.isroof 
+            left outer join "{cfg.domain.case_schema}"."{cfg.tables.walls}" w on w.gid = bw.wid 
+            left outer join "{cfg.domain.case_schema}"."{cfg.tables.surface_params}" pg on pg.code = w.stenakatd
+            left outer join "{cfg.domain.case_schema}"."{cfg.tables.surface_params}" pu on pu.code = w.stenakath 
+        order by g.j,g.i;
+    """
+    extra_verbose('\t{}', sqltext)
+    cur.execute(sqltext, (cfg.surf_range.roof_min,))
+    res = cur.fetchall()
+    sql_debug(connection)
+    varr = np.reshape(np.asarray([x[0] for x in res], dtype=vt), (cfg.domain.ny, cfg.domain.nx))
+    del res
+    var = np.nan_to_num(varr, copy=False, nan=cfg.fill_values[vt], posinf=cfg.fill_values[vt],
+                        neginf=cfg.fill_values[vt])
+    debug('Variable {}, parameter {} written.', vn, par)
+    if cfg.visual_check.enabled:
+        variable_visualization(var=var,
+                               x=np.asarray(ncfile.variables['x']), y=np.asarray(ncfile.variables['y']),
+                               var_name=vn, par_id=par, text_id=vn, path=cfg.visual_check.path,
+                               show_plots=cfg.visual_check.show_plots)
+    return var
+
 def write_building_pars(ncfile, cfg, connection, cur):
+    """ write building parameters according to PIDS """
+    # TODO Adjust replacement pars
+    # TODO Insulation
+    # TODO Replacements - why?
+    progress('Filling building pars')
+    vn = 'building_albedo_type'
+    vt = 'f4'
+    debug('Processing var: {}', vn)
+    create_var(cfg, ncfile, vn, vt, ('building_surface_type', 'y', 'x'), long_name='building albedo type')
+    for par in cfg[vn]._settings.keys():
+        debug('Processing building var: {}, par: {}, value: {}', vn, par, cfg[vn][par])
+        nc_var = fetch_building_parameters(ncfile, cfg, vn, par, cfg[vn][par], cur, connection, vt)
+        ncfile.variables[vn][par, :, :] = nc_var
+
+    vn = 'building_emissivity'
+    vt = 'f4'
+    debug('Processing var: {}', vn)
+    create_var(cfg, ncfile, vn, vt, ('building_surface_type', 'y', 'x'), long_name='building emissivity')
+    for par in cfg[vn]._settings.keys():
+        debug('Processing building var: {}, par: {}, value: {}', vn, par, cfg[vn][par])
+        nc_var = fetch_building_parameters(ncfile, cfg, vn, par, cfg[vn][par], cur, connection, vt)
+        ncfile.variables[vn][par, ...] = nc_var
+
+    # winfraction check
+    correct_win_frac(ncfile, vn, 0, 3)
+    correct_win_frac(ncfile, vn, 1, 4)
+    correct_win_frac(ncfile, vn, 2, 5)
+
+
+    vn = 'building_fraction'
+    vt = 'f4'
+    debug('Processing var: {}', vn)
+    create_var(cfg, ncfile, vn, vt, ('building_surface_type', 'y', 'x'), long_name='building surface fraction')
+    for par in cfg[vn]._settings.keys():
+        debug('Processing building var: {}, par: {}, value: {}', vn, par, cfg[vn][par])
+        nc_var = fetch_building_parameters(ncfile, cfg, vn, par, cfg[vn][par], cur, connection, vt)
+        ncfile.variables[vn][par, ...] = nc_var
+
+    vn = 'building_general_pars'
+    vt = 'f4'
+    debug('Processing var: {}', vn)
+    create_var(cfg, ncfile, vn, vt, ('building_general_par', 'y', 'x'), long_name='building general pars')
+    for par in cfg[vn]._settings.keys():
+        debug('Processing building var: {}, par: {}, value: {}', vn, par, cfg[vn][par])
+        nc_var = fetch_building_parameters(ncfile, cfg, vn, par, cfg[vn][par], cur, connection, vt)
+        ncfile.variables[vn][par, ...] = nc_var
+
+    vn = 'building_heat_capacity'
+    vt = 'f4'
+    debug('Processing var: {}', vn)
+    create_var(cfg, ncfile, vn, vt, ('building_surface_type','building_surface_layer', 'y', 'x'), long_name='building heat capacity')
+    for par in cfg[vn]._settings.keys():
+        for ilayer, layer in enumerate(cfg[vn][par]):
+            debug('Processing building var: {}, par: {}, value: {}', vn, par, layer)
+            nc_var = fetch_building_parameters(ncfile, cfg, vn, layer, layer, cur, connection, vt)
+            ncfile.variables[vn][par, ilayer, ...] = nc_var
+
+    vn = 'building_heat_conductivity'
+    vt = 'f4'
+    debug('Processing var: {}', vn)
+    create_var(cfg, ncfile, vn, vt, ('building_surface_type', 'building_surface_layer', 'y', 'x'), long_name='building heat conductivity')
+    for par in cfg[vn]._settings.keys():
+        for ilayer, layer in enumerate(cfg[vn][par]):
+            debug('Processing building var: {}, par: {}, value: {}', vn, par, layer)
+            nc_var = fetch_building_parameters(ncfile, cfg, vn, layer, layer, cur, connection, vt)
+            ncfile.variables[vn][par, ilayer, ...] = nc_var
+
+    vn = 'building_roughness_length'
+    vt = 'f4'
+    debug('Processing var: {}', vn)
+    create_var(cfg, ncfile, vn, vt, ('building_surface_level', 'y', 'x'), long_name='building roughness length')
+    for par in cfg[vn]._settings.keys():
+        debug('Processing building var: {}, par: {}, value: {}', vn, par, cfg[vn][par])
+        nc_var = fetch_building_parameters(ncfile, cfg, vn, par, cfg[vn][par], cur, connection, vt)
+        ncfile.variables[vn][par, ...] = nc_var
+
+    vn = 'building_roughness_length_qh'
+    vt = 'f4'
+    debug('Processing var: {}', vn)
+    create_var(cfg, ncfile, vn, vt, ('building_surface_level', 'y', 'x'), long_name='building roughness length for heat')
+    for par in cfg[vn]._settings.keys():
+        debug('Processing building var: {}, par: {}, value: {}', vn, par, cfg[vn][par])
+        nc_var = fetch_building_parameters(ncfile, cfg, vn, par, cfg[vn][par], cur, connection, vt)
+        ncfile.variables[vn][par, ...] = nc_var
+
+    vn = 'building_thickness'
+    vt = 'f4'
+    debug('Processing var: {}', vn)
+    create_var(cfg, ncfile, vn, vt, ('building_surface_type', 'building_surface_layer', 'y', 'x'), long_name='building layers thickness')
+    for par in cfg[vn]._settings.keys():
+        for ilayer, layer in enumerate(cfg[vn][par]):
+            debug('Processing building var: {}, par: {}, value: {}', vn, par, layer)
+            nc_var = fetch_building_parameters(ncfile, cfg, vn, layer, layer, cur, connection, vt)
+            ncfile.variables[vn][par, ilayer, ...] = nc_var
+
+    vn = 'building_transmissivity'
+    vt = 'f4'
+    debug('Processing var: {}', vn)
+    create_var(cfg, ncfile, vn, vt, ('building_surface_level', 'y', 'x'), long_name='building transmissivity')
+    for par in cfg[vn]._settings.keys():
+        debug('Processing building var: {}, par: {}, value: {}', vn, par, cfg[vn][par])
+        nc_var = fetch_building_parameters(ncfile, cfg, vn, par, cfg[vn][par], cur, connection, vt)
+        ncfile.variables[vn][par, ...] = nc_var
+
+def write_building_pars_depricated(ncfile, cfg, connection, cur):
     # write building_pars - roof parameters
     vn = 'building_pars'
     vt = 'f4'
@@ -1612,6 +1758,16 @@ def write_building_pars(ncfile, cfg, connection, cur):
 
 
     debug('Variable {} completely written.', vn)
+
+def correct_win_frac(ncfile, vn, ipar_wi, ipar_wa, limit=0.95):
+    """ Check if windows fraction is above limit """
+    winfrac = np.argwhere(ncfile.variables[vn][ipar_wi,...] > limit)
+    if winfrac.size > 0:
+        verbose(f'Modifying winfrac in buildings_pars where winfrac > {limit}, '
+                f'setting winfrac = {limit} and wallfrac = {1.0 - limit}')
+        for j, i in winfrac:
+            ncfile.variables[vn][ipar_wi, j, i] = limit
+            ncfile.variables[vn][ipar_wa, j, i] = 1.0 - limit
 
 def test_building_insulation(cfg, connection, cur):
     # test if columns zatepd and zateph exist in table walls and add the indication to insulation cfg parameters

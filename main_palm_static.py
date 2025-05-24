@@ -183,8 +183,11 @@ if not cfg.slurb:
     write_buildings(ncfile, cfg, connection, cur)
     if cfg.lod2:
         test_building_insulation(cfg, connection, cur)
-        # write_building_pars(ncfile, cfg, connection, cur)
-        write_building_pars_depricated(ncfile, cfg, connection, cur)
+        if cfg.buildings_pars_depricated:
+            warning('You are using deprecated building pars!!!!!!')
+            write_building_pars_depricated(ncfile, cfg, connection, cur)
+        else:
+            write_building_pars(ncfile, cfg, connection, cur)
         write_building_surface_pars(ncfile, cfg, connection, cur, vtabs)
         write_albedo_pars(ncfile, cfg, connection, cur)
 else:
