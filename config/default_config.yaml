@@ -228,6 +228,12 @@ ndims:
     nbuilding_pars: 150            # number of elements in building_pars  (former 51)
     nbuilding_surface_pars: 28     # number of elements in building_surface_pars
     nsurface_fraction: 3           # number of elements in surface_fraction
+    building_surface_type: 9       # number of elements in building albedo type
+    building_general_par: 2        # number of elements in building general pars
+    building_surface_layer: 4      # number of layer elements, 1 .. outermost, 4 .. inner most
+    building_indoor_par: 19        # number of elements in building indoor pars
+    building_surface_level: 3      # number of elements inbuilding lai
+    
     
 landcover_params_var: 'katland'
 
@@ -493,6 +499,131 @@ building_pars:
     # 148: # Heat capacity of window layer 4 at roof (J/m²/K)
     # 149: # Thermal conductivity of window layer 4 at roof  (W/m/K)
     
+building_albedo_type: #(building_surface_type,y,x)
+    0: '0'  # wall albedo type gfl
+    1: '0'  # wall albedo type agfl
+    2: '0'  # wall albedo type roof
+    3: '0'  # window albedo type gfl
+    4: '0'  # window albedo type agfl
+    5: '0'  # window albedo type roof
+    6: '0'  # green albedo type gfl
+    7: '0'  # green albedo type agfl
+    8: '0'  # green albedo type roof
+
+
+
+building_emissivity: #(building_surface_type,y,x)
+    0: 'pg.emissivity'  # wall emissivity gfl
+    1: 'pu.emissivity'  # wall emissivity agfl
+    2: 'r.emisivita'    # wall emissivity roof
+    3: 'pg.emissivity'  # window emissivity gfl
+    4: 'pu.emissivity'  # window emissivity agfl
+    5: 'r.emisivita'    # window emissivity roof
+    6: 'pg.emissivity'  # green emissivity gfl
+    7: 'pu.emissivity'  # green emissivity agfl
+    8: 'r.emisivita'    # green emissivity roof
+
+building_fraction: #(building_surface_type,y,x)
+    0: 'w.wallfracd'   # wall fraction gfl
+    1: 'w.wallfrach'   # wall fraction agfl
+    2: '1.0'           # wall fraction roof
+    3: 'w.winfracd'    # window fraction gfl
+    4: 'w.winfrach'    # window fraction agfl
+    5: '0'             # window fraction roof
+    6: '0'             # green fraction gfl
+    7: '0'             # green fraction agfl
+    8: '0'             # green fraction roof
+
+building_general_pars: #(building_general_par,y,x)
+    0: *ground_floor_height  # ground floor level height
+#    1: ''                    # green type roof (2 extensive, 1 intensive)
+
+
+building_heat_capacity: #(building_surface_type,building_surface_layer,y,x)
+    0: [pg.capacity_surf, pg.capacity_surf, pg.capacity_volume, pg.capacity_volume]  # wall gfl
+    1: [pu.capacity_surf, pu.capacity_surf, pu.capacity_volume, pu.capacity_volume]  # wall agfl
+    2: [pr.capacity_surf, pr.capacity_surf, pr.capacity_volume, pr.capacity_surf]        # wall roof
+#    3: ''  # window gfl (not defined)
+#    4: ''  # window agfl (not defined)
+#    5: ''  # window roof (not defined)
+#    6: '0' # green gfl (not defined, defaults)
+#    7: '0' # green agfl (not defined)
+#    8: '0' # green roof (not defined)
+
+building_heat_conductivity: # (building_surface_type,building_surface_layer,y,x)
+    0: [pg.conductivity_surf, pg.conductivity_surf, pg.conductivity_volume, pg.conductivity_volume]  # wall gfl
+    1: [pu.conductivity_surf, pu.conductivity_surf, pu.conductivity_volume, pu.conductivity_volume]  # wall agfl
+    2: [pr.conductivity_surf, pr.conductivity_surf, pr.conductivity_volume, pr.conductivity_surf]        # wall roof
+#    3: ''  # window gfl (not defined)
+#    4: ''  # window agfl (not defined)
+#    5: ''  # window roof (not defined)
+#    6: ''  # green gfl (not defined, defaults)
+#    7: ''  # green agfl (not defined)
+#    8: ''  # green roof (not defined)
+
+#building_indoor_pars: #(building_indoor_par,y,x)
+#    0: ''   # indoor target summer temperature
+#    1: ''   # indoor target winter temperature
+#    2: ''   # shading factor
+#    3: ''   # g-value windows
+#    4: ''   # u-value windows
+#    5: ''   # basic airflow without occupancy of the room (currently not used)
+#    6: ''   # additional airflow dependent on occupancy of the room (currently not used)
+#    7: ''   # heat recovery efficiency
+#    8: ''   # dynamic parameter specific effective surface
+#    9: ''   # dynamic parameter inner heat storage
+#    10: ''  # ratio internal surface/floor area
+#    11: ''  # maximal heating capacity
+#    12: ''  # maximal cooling capacity
+#    13: ''  # additional internal heat gains dependent on occupancy of the room
+#    14: ''  # basic internal heat gains without occupancy of the room
+#    15: ''  # storey height
+#    16: ''  # ceiling construction height
+#    17: ''  # anthropogenic heat output factor for heating
+#    18: ''  # anthropogenic heat output factor for cooling
+
+#building_lai: #(building_surface_level,y,x)
+#    0: ''   # LAI gfl
+#    1: ''   # LAI agfl
+#    2: ''   # LAI roof
+
+building_roughness_length: #(building_surface_level,y,x)
+    0: 'pg.roughness'   # z0 gfl
+    1: 'pu.roughness'   # z0 agfl
+    2: 'pr.roughness'   # z0 roof
+
+building_roughness_length_qh: #(building_surface_level,y,x)
+    0: 'pg.roughness_h'   # z0h and z0q gfl
+    1: 'pu.roughness_h'   # z0h and z0q agfl
+    2: 'pr.roughness_h'   # z0h and z0q roof
+
+building_thickness: #(building_surface_type,building_surface_layer,y,x)
+    0: [!join [ pr.thicknes*, *zwall_norm1 ],
+        !join [ pr.thicknes*, *zwall_norm2 ],
+        !join [ pr.thicknes*, *zwall_norm3 ],
+        !join [ pr.thicknes*, *zwall_norm4 ]]   # wall layer thicknesses gfl
+    1: [!join [ pr.thicknes*, *zwall_norm1 ],
+        !join [ pr.thicknes*, *zwall_norm2 ],
+        !join [ pr.thicknes*, *zwall_norm3 ],
+        !join [ pr.thicknes*, *zwall_norm4 ]]    # wall layer thicknesses agfl
+    2: [!join [r.tloustka*0.01*, *zwall_norm1],
+        !join [r.tloustka*0.01*, *zwall_norm2],
+        !join [r.tloustka*0.01*, *zwall_norm3],
+        !join [r.tloustka*0.01*, *zwall_norm4]]   # wall layer thicknesses roof
+#    3: ''   # window layer thicknesses gfl
+#    4: ''   # window layer thicknesses agfl
+#    5: ''   # window layer thicknesses roof
+#    6: ''   # green layer thicknesses gfl
+#    7: ''   # green layer thicknesses agfl
+#    8: ''   # green layer thicknesses roof
+
+building_transmissivity: #(building_surface_level,y,x)
+    0: *wintrans   # window transmissivity gfl
+    1: *wintrans   # window transmissivity agfl
+    2: *wintrans   # window transmissivity roof
+
+buildings_pars_depricated: False
+
 building_surface_pars:
     0: ['1', 'w.wallfracd', 'w.wallfrach', '1', '1']  # wall fraction (0-1) (set according building_pars_repl)
     1: ['0', 'w.winfracd', 'w.winfrach', '0', '0']  # window fraction (0-1) # no data for window fraction on roofs, set to zero TODO: not used so far
