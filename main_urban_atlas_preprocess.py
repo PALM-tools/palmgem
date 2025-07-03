@@ -153,7 +153,7 @@ if cfg.clean_up:
 debug('Checking buildings raster existence in input schema')
 cur.execute('SELECT EXISTS(SELECT * FROM information_schema.tables '
             'WHERE table_schema=%s and table_name=%s)',
-            (cfg.domain.case_schema, cfg.tables.buildings,))
+            (cfg.domain.case_schema, cfg.tables.buildings_or,))
 rel_exists = cur.fetchone()[0]
 if rel_exists:
     progress('Processing buildings DEM')

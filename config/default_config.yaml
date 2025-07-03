@@ -30,6 +30,7 @@ domain:
     ny: 128
     cent_x: 459180
     cent_y: 5547800
+    origin_z: -1
 
 default_height:
     0: 16    # [m]
@@ -130,6 +131,10 @@ cortyard_fill:
 topo_fill_v2:
     apply: False
     count: 9
+    
+topo_fill_label: True
+
+topo_fill_corners: True
 
 flat_terrain:
     force: False

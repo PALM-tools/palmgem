@@ -22,6 +22,279 @@ import numpy as np
 import sys
 from config.logger import *
 
+def topo_fill_labeled(cfg, connection, cur):
+    """ Advanced algorithm that mimic topo filtering in PALM internal routines. """
+    from scipy import ndimage as ndi
+    from psycopg2.extensions import register_adapter, AsIs
+    register_adapter(np.int64, AsIs)
+
+    progress('Start topo fill using labeling')
+    debug('Create temp table with terrain and buildings')
+    sqltext = f"""
+        drop table if exists nz_temp;
+        CREATE TEMP TABLE "nz_temp" AS
+        SELECT g.id as grid_id, g.i AS i, g.j AS j,  
+            CASE WHEN b.height IS NOT NULL AND NOT b.is_bridge THEN b.nz+g.nz
+                 ELSE g.nz END AS nz, 
+            CASE WHEN b.height IS NOT NULL AND NOT b.is_bridge THEN true 
+                 ELSE false END AS is_building, 
+            CASE WHEN b.height IS NOT NULL AND NOT b.is_bridge THEN b.height+g.nz
+                 ELSE g.height END AS height
+            FROM "{cfg.domain.case_schema}"."{cfg.tables.grid}" AS g
+                LEFT OUTER JOIN "{cfg.domain.case_schema}"."{cfg.tables.buildings_grid}" AS b ON g.id=b.id
+    """
+    cur.execute(sqltext)
+    sql_debug(connection)
+    connection.commit()
+
+    debug('Fetch nz and grid id')
+    sqltext = f"""
+        select 
+        nz, grid_id
+    from nz_temp
+    order by j,i;
+    """
+
+    cur.execute(sqltext)
+    res = cur.fetchall()
+    res1 = [9999 if x[0] is None else x[0] for x in res]
+    res2 = [9999 if x[1] is None else x[1] for x in res]
+    var = np.reshape(np.asarray([x for x in res1], dtype='int'), (cfg.domain.ny, cfg.domain.nx))
+    gids = np.reshape(np.asarray([x for x in res2], dtype='int'), (cfg.domain.ny, cfg.domain.nx))
+    del res
+
+    debug('Labeling using scipy.ndimage.label')
+    uv = np.unique(var)
+    s = ndi.generate_binary_structure(2, 2)
+    cum_num = 0
+    result = np.zeros_like(var)
+    for v in uv[1:]:
+        labeled_array, num_features = ndi.label((var == v).astype(int)) #, structure=s)
+        result += np.where(labeled_array > 0, labeled_array + cum_num, 0).astype(result.dtype)
+        cum_num += num_features
+
+    debug('Insert labelled back')
+    arr = np.array([gids.flatten(), result.flatten(), var.flatten()]).T.astype(int)
+    to_insert = tuple(map(tuple, arr))
+
+    sql_create = f"""
+        drop table if exists nz_temp_labelled;
+        create table nz_temp_labelled
+        (grid_id bigint, label bigint, nz int)"""
+    cur.execute(sql_create)
+
+    sql_insert = f"""
+        insert into nz_temp_labelled
+        select t.* from (
+            values (%s :: bigint, %s :: bigint, %s :: bigint)
+        ) t(grid_id, label, nz);
+    """
+    batch_size = 2000
+    batches = np.arange(0, len(to_insert) + batch_size, batch_size)
+
+    for ib in range(batches.size - 1):
+        extra_verbose('uploading batch {} / {}', ib + 1, batches.size-1)
+        cur.executemany(sql_insert, to_insert[batches[ib]:batches[ib + 1]])
+        connection.commit()
+
+    debug('Find valid groups to fill')
+    sqltext = f"""
+        -- Put some indexes
+        ALTER TABLE "nz_temp" ADD primary key (grid_id);
+
+        create index nz_temp_grid_ji on nz_temp (j,i);
+        
+        create index nz_temp_grid_nz on nz_temp (nz);
+        
+        create index nz_temp_labelled_label on nz_temp_labelled (label);
+        
+        drop table if exists grid_groups;
+        create temp table grid_groups as 
+        with agg_labels as (
+            select 
+                label, 
+                nz,
+                array_agg(grid_id) as ids
+            from nz_temp_labelled
+            group by label, nz
+            having count(*) < 10
+        ),
+        group_with_grid as (
+            SELECT 
+                fcg.*, 
+                array_length(fcg.ids, 1) as group_count, 
+                array_agg(g2.nz) as boundary_nz,
+                min(g2.nz) as min_nz
+            FROM agg_labels fcg
+                join nz_temp g1 on g1.grid_id = any(fcg.ids)
+                join nz_temp g2 on ((g1.i = g2.i+1 and g1.j = g2.j) OR 
+                                    (g1.i = g2.i-1 and g1.j = g2.j) OR
+                                    (g1.i = g2.i   and g1.j = g2.j-1) OR
+                                    (g1.i = g2.i   and g1.j = g2.j+1)) and not g2.grid_id = any(fcg.ids) 
+            group by 1,2,3	
+        )
+        select g1.i, g1.j, g1.grid_id, gg.min_nz as new_nz, g1.is_building
+        from group_with_grid gg
+            join nz_temp g1 on g1.grid_id = any(gg.ids)
+        where gg.nz < all(boundary_nz);
+    """
+    cur.execute(sqltext)
+
+    # fetch all grid that will be filled
+    sqltext = """
+        select i, j, new_nz from grid_groups;
+    """
+    cur.execute(sqltext)
+    missings = cur.fetchall()
+    if len(missings) == 0:
+        return missings
+    progress('Using topo fill with labeling algorithm {} grid was filled', len(missings))
+    for i, j, new_nz in missings:
+        extra_verbose('In filling grid; filling [j, i, new_nz] = [{},{},{}] ', j, i, new_nz)
+
+    # update nz, height in grid
+    # TODO: track all height, in case of cct
+    debug('Updating nz, height in grid')
+    sqltext = f"""
+        UPDATE "{cfg.domain.case_schema}"."{cfg.tables.grid}" AS g 
+        SET (height, nz) = (gg.new_nz * {cfg.domain.dz} + {cfg.domain.oro_min}, gg.new_nz)
+        FROM "grid_groups" AS gg
+        WHERE g.i = gg.i AND g.j = gg.j AND NOT is_building
+    """
+    cur.execute(sqltext)
+
+    # update nz, height in buildings_grid
+    debug('Updating nz, height in buildings grid')
+    # TODO: update with real height
+    sqltext = f"""
+        UPDATE "{cfg.domain.case_schema}"."{cfg.tables.buildings_grid}" bg
+        SET (height, nz) = ((gg.new_nz - g.nz) * {cfg.domain.dz}, gg.new_nz - g.nz)
+        FROM "grid_groups" AS gg
+            JOIN "{cfg.domain.case_schema}"."{cfg.tables.grid}"  AS g ON g.id = gg.grid_id
+        WHERE gg.is_building AND bg.i = gg.i AND bg.j = gg.j
+        """
+    cur.execute(sqltext)
+    connection.commit()
+
+    return missings
+
+def topo_fill_corners(cfg, connection, cur):
+    """ Advance in filtering more. Filter also cases where grid is
+        surrounded by three adjacent higher gridcells. Including ghost layers.
+        Do this in a while loop.
+    """
+    progress('Create topo fill in buildings')
+    sql_nz_temp = f"""
+        drop table if exists nz_temp;
+        CREATE TEMP TABLE "nz_temp" AS
+        SELECT g.id as grid_id, g.i AS i, g.j AS j,  
+            CASE WHEN b.height IS NOT NULL AND NOT b.is_bridge THEN b.nz+g.nz
+                 ELSE g.nz END AS nz, 
+            CASE WHEN b.height IS NOT NULL AND NOT b.is_bridge THEN true 
+                 ELSE false END AS is_building, 
+            CASE WHEN b.height IS NOT NULL AND NOT b.is_bridge THEN b.height+g.nz
+                 ELSE g.height END AS height
+            FROM "{cfg.domain.case_schema}"."{cfg.tables.grid}" AS g
+                LEFT OUTER JOIN "{cfg.domain.case_schema}"."{cfg.tables.buildings_grid}" AS b ON g.id=b.id;
+        
+        -- Include ghost layer
+        
+        -- Insert ghost layer with i = -1
+        INSERT INTO nz_temp (grid_id, i, j, nz, is_building)
+        SELECT (select max(grid_id) from nz_temp) + row_number() over(), -1, j, 9999, false
+        FROM nz_temp
+        WHERE i = 0 and j BETWEEN 0 AND {cfg.domain.ny};
+        
+        -- Insert ghost layer with i = nx + 1
+        INSERT INTO nz_temp (grid_id, i, j, nz, is_building)
+        SELECT (select max(grid_id) from nz_temp) + row_number() over(), {cfg.domain.nx} + 1, j, 9999, false 
+        FROM nz_temp
+        WHERE i = {cfg.domain.nx} and j BETWEEN 0 AND {cfg.domain.ny};
+        
+        -- Insert ghost layer with j = -1
+        INSERT INTO nz_temp (grid_id, i, j, nz, is_building)
+        SELECT (select max(grid_id) from nz_temp) + row_number() over(), i, -1, 9999, false
+        FROM nz_temp
+        WHERE j = 0 and i BETWEEN 0 AND {cfg.domain.nx};
+        
+        -- Insert ghost layer with j = ny + 1
+        INSERT INTO nz_temp (grid_id, i, j, nz, is_building)
+        SELECT (select max(grid_id) from nz_temp) + row_number() over(), i, {cfg.domain.ny} + 1, 9999, false 
+        FROM nz_temp
+        WHERE j = {cfg.domain.ny} and i BETWEEN 0 AND {cfg.domain.nx};
+        
+        -- Insert corner point (-1, -1)
+        INSERT INTO nz_temp (grid_id, i, j, nz, is_building)
+        VALUES ((select max(grid_id) from nz_temp) + 1, -1, -1, 9999, false);
+        
+        -- Insert corner point (-1, {cfg.domain.ny} + 1, is_building)
+        INSERT INTO nz_temp (grid_id, i, j, nz, is_building)
+        VALUES ((select max(grid_id) from nz_temp) + 1,-1, {cfg.domain.ny} + 1, 9999, false);
+        
+        -- Insert corner point ({cfg.domain.nx} + 1, -1, is_building)
+        INSERT INTO nz_temp (grid_id, i, j, nz, is_building)
+        VALUES ((select max(grid_id) from nz_temp) + 1, {cfg.domain.nx} + 1, -1, 9999, false);
+        
+        -- Insert corner point ({cfg.domain.nx} + 1, {cfg.domain.ny} + 1, is_building)
+        INSERT INTO nz_temp (grid_id, i, j, nz, is_building)
+        VALUES ((select max(grid_id) from nz_temp) + 1, {cfg.domain.nx} + 1, {cfg.domain.ny} + 1, 9999, false);
+       
+        create index nz_temp_grid_ji on nz_temp (j,i);
+        create index nz_temp_grid_id on nz_temp (grid_id);
+    """
+
+    sql_filter = f"""
+        drop table if exists nz_temp_build;
+        create temp table nz_temp_build as 
+        select
+            t1.i, t1.j, t1.grid_id, t1.nz, t1.is_building,
+            min(t2.nz) as new_nz
+        from nz_temp t1
+            join nz_temp t2 on ((t1.i = t2.i+1 and t1.j = t2.j) OR 
+                                (t1.i = t2.i-1 and t1.j = t2.j) OR
+                                (t1.i = t2.i   and t1.j = t2.j-1) OR
+                                (t1.i = t2.i   and t1.j = t2.j+1)) and t1.nz < t2.nz
+        group by 1, 2, 3, 4, 5
+        having count(*) > 2;
+    """
+
+    sql_fetch = """
+        select i, j, new_nz from nz_temp_build;
+    """
+
+
+    sql_update = f"""
+        UPDATE "{cfg.domain.case_schema}"."{cfg.tables.buildings_grid}" bg
+        SET (height, nz) = ((nt.new_nz - g.nz) * {cfg.domain.dz}, nt.new_nz - g.nz)
+        FROM nz_temp_build nt
+            join "{cfg.domain.case_schema}"."{cfg.tables.grid}" g on g.id = nt.grid_id
+        where bg.i = nt.i and bg.j = nt.j and nt.is_building;
+        
+        UPDATE "{cfg.domain.case_schema}"."{cfg.tables.grid}" g
+        SET (height, nz) = (nt.new_nz * {cfg.domain.dz} + {cfg.domain.oro_min}, nt.new_nz)
+        FROM nz_temp_build nt
+        where g.i = nt.i and g.j = nt.j and not nt.is_building;
+        
+    """
+
+    # Max iter due to deadlock
+    for iters in range(50):
+        debug('Filtering topo in buildings')
+        cur.execute(sql_nz_temp)
+        cur.execute(sql_filter)
+        cur.execute(sql_fetch)
+        missings = cur.fetchall()
+
+        if len(missings) == 0:
+            debug('Finish topo fill')
+            break
+        progress('Using topo fill with building - specific algorithm. {} grid was filled', len(missings))
+        for i, j, new_nz in missings:
+            extra_verbose('In filling grid; filling [j, i, new_nz] = [{},{},{}] ', j, i, new_nz)
+
+        cur.execute(sql_update)
+        connection.commit()
+
 def create_fishnet(cfg, connection, cur):
     """ CREATE fishnet
         Regular gridnet in defined extend with defined number of grid fishnet.nx fishnet.ny
@@ -609,14 +882,17 @@ def calculate_origin_z_oro_min(cfg, connection, cur):
         Calculation of gridded height in table grid.
     """
     progress('Calculation of origin_z and oro_min')
-    # calculate origin_z as bottom of the current or parent domain
-    sqltext = 'select min(height) from "{}".{}'. \
-        format(cfg.domain.case_schema if cfg.domain.parent_domain_schema == ''
-               else cfg.domain.parent_domain_schema, cfg.tables.grid)
-    cur.execute(sqltext)
-    cfg.domain._settings['origin_z'] = cur.fetchone()[0]
-    cfg.domain._settings['oro_min'] = cfg.domain.origin_z
-    debug('Origin_z is in height level: {}', cfg.domain.origin_z)
+    if cfg.domain.origin_z == -1:
+        # calculate origin_z as bottom of the current or parent domain
+        sqltext = 'select min(height) from "{}".{}'. \
+            format(cfg.domain.case_schema if cfg.domain.parent_domain_schema == ''
+                   else cfg.domain.parent_domain_schema, cfg.tables.grid)
+        cur.execute(sqltext)
+        cfg.domain._settings['origin_z'] = cur.fetchone()[0]
+        cfg.domain._settings['oro_min'] = cfg.domain.origin_z
+        debug('Origin_z is in height level: {}', cfg.domain.origin_z)
+    else:
+        cfg.domain._settings['oro_min'] = cfg.domain.origin_z
 
     # calculate grid nz height
     sqltext = 'UPDATE "{0}"."{1}" SET nz = CAST((height - {2})/{3} AS INTEGER)'.format(
@@ -1772,8 +2048,16 @@ def connect_buildings_height(cfg, connection, cur):
         filled_grids = filling_grid(cfg, connection, cur)
         all_filled.append(filled_grids)
 
-    # Fill grid cells near boundary
-    fill_near_boundary(cfg, connection, cur)
+    # Fill grid using label algorithm
+    if cfg.topo_fill_label:
+        topo_label_filled = [0,0,0]
+        while len(topo_label_filled) > 0:
+            topo_label_filled = topo_fill_labeled(cfg, connection, cur)
+
+
+    # Fill buildings with additional algorithm
+    if cfg.topo_fill_corners:
+        topo_fill_corners(cfg, connection, cur)
 
     if cfg.do_cct:
         sqltext = 'UPDATE "{0}"."{1}" ' \
@@ -1784,6 +2068,9 @@ def connect_buildings_height(cfg, connection, cur):
         cur.execute(sqltext)
         sql_debug(connection)
         connection.commit()
+
+    # Fill grid cells near boundary
+    fill_near_boundary(cfg, connection, cur)
 
     restore_log_level(cfg)
 
