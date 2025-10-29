@@ -88,4 +88,15 @@ Sciences (ICS CAS).
 ## Authors
 List of authors with contacts.
 
+## Acknowledgenments
+
+PALM-meteo was created with the support of these projects:
+
+- [TURBAN: Turbulent-resolving urban modeling of air quality and thermal comfort](https://project-turban.eu/)
+  (Technology Agency of the Czech Republic
+  [project TO01000219](https://starfos.tacr.cz/en/projekty/TO01000219))
+- [CARMINE – Climate-Resilient Development Pathways in Metropolitan Regions of Europe](https://carmine-project.eu/)
+  (European Commission
+  [project 101137851](https://cordis.europa.eu/projects/101137851))
+
 ## Cite us
