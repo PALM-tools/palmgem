@@ -90,7 +90,7 @@ List of authors with contacts.
 
 ## Acknowledgenments
 
-PALM-meteo was created with the support of these projects:
+PALM-GeM was created with the support of these projects:
 
 - [TURBAN: Turbulent-resolving urban modeling of air quality and thermal comfort](https://project-turban.eu/)
   (Technology Agency of the Czech Republic
