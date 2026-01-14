@@ -602,7 +602,7 @@ def cct_continuity_check(ncfile, cfg):
                 common_full = all(full_corners[iv, :] == full_corners[iv2, :])
                 common_free = all(free_corners[iv, :] == free_corners[iv2, :])
                 if not common_full and not common_free:
-                    warning('Face {jf} has consecutive edges with different directions that do not have a common corner: '
+                    warning('Face {} has consecutive edges with different directions that do not have a common corner: '
                             '({}, {}) -> ({}, {})',
                             jf, full_corners[iv], free_corners[iv], full_corners[iv2], free_corners[iv2])
                     allok = False
@@ -641,7 +641,7 @@ def cct_continuity_check(ncfile, cfg):
 
         if nbound == 0:
             if len(edge_faces) != 4:
-                msg = f'Standard edge with vertex {ie} has {len(edge_faces)} adjacent faces instead of 4: {edge_faces}.'
+                msg = f'Standard edge with vertex {ie} [i,j,k; {c1[2], c1[1], c1[0]}] has {len(edge_faces)} adjacent faces instead of 4: {edge_faces}.'
                 singular = check_singular(edge_faces, faces, vert_kji, vert_len, ie)
                 if singular:
                     extra_verbose('Singular edge')

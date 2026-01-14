@@ -22,6 +22,51 @@ import numpy as np
 import sys
 from config.logger import *
 
+def rename_columns(vtabs, cfg, connection, cur):
+    """ Rename column from legacy versions. """
+    debug('Renaming legacy columns to english version')
+    for vtab in vtabs:
+        verbose(f'Table: {vtab}')
+        for col in cfg.columns._settings.keys():
+            for orig_name in cfg.columns[col]:
+                new_name = col
+                verbose(f'Col: {orig_name} -> {new_name}')
+                # check if given column exists
+                sqltext = f"""
+                    select exists(
+                        select * 
+                        from information_schema.columns
+                        where table_schema = %s
+                            and table_name = %s
+                            and column_name = %s)
+                """
+                cur.execute(sqltext, (cfg.domain.case_schema, vtab, orig_name))
+                sql_debug(connection)
+                has_col = cur.fetchone()[0]
+
+                # check not already present
+                # check if given column exists
+                sqltext = f"""
+                    select exists(
+                        select * 
+                        from information_schema.columns
+                        where table_schema = %s
+                            and table_name = %s
+                            and column_name = %s)
+                """
+                cur.execute(sqltext, (cfg.domain.case_schema, vtab, new_name))
+                sql_debug(connection)
+                already_there = cur.fetchone()[0]
+
+                # if yes, then rename
+                if has_col and not already_there:
+                    verbose('\trename column')
+                    sqltext = f""" alter table "{cfg.domain.case_schema}"."{vtab}"
+                                   rename column {orig_name} to {new_name}; """
+                    cur.execute(sqltext)
+                    sql_debug(connection)
+                    connection.commit()
+
 def topo_fill_labeled(cfg, connection, cur):
     """ Advanced algorithm that mimic topo filtering in PALM internal routines. """
     from scipy import ndimage as ndi
@@ -89,7 +134,7 @@ def topo_fill_labeled(cfg, connection, cur):
             values (%s :: bigint, %s :: bigint, %s :: bigint)
         ) t(grid_id, label, nz);
     """
-    batch_size = 2000
+    batch_size = 20000
     batches = np.arange(0, len(to_insert) + batch_size, batch_size)
 
     for ib in range(batches.size - 1):
@@ -97,68 +142,103 @@ def topo_fill_labeled(cfg, connection, cur):
         cur.executemany(sql_insert, to_insert[batches[ib]:batches[ib + 1]])
         connection.commit()
 
+    # cur.execute('create table milano_10m.nz_temp_labelled as select * from nz_temp_labelled')
+    # connection.commit()
+    #
+    # cur.execute('create table milano_10m.nz_temp as select * from nz_temp')
+    # connection.commit()
+
+
+
     debug('Find valid groups to fill')
     sqltext = f"""
-        -- Put some indexes
-        ALTER TABLE "nz_temp" ADD primary key (grid_id);
-
-        create index nz_temp_grid_ji on nz_temp (j,i);
+        -- Group label regions into single entry
+        drop table if exists group_small;
+        create temp table group_small as 
+        select 
+            label,
+            array_agg(grid_id) as ids, 
+            nz,
+            count(*) as group_count
+        from nz_temp_labelled
+        group by label, nz
+        having count(*) < 10;
         
-        create index nz_temp_grid_nz on nz_temp (nz);
+        -- Put indexes
+        create index group_small_array_idx on group_small(ids);
+        create index nz_temp_grid_idx on nz_temp(grid_id);
+        create index nz_temp_i_j on nz_temp(j,i);
         
-        create index nz_temp_labelled_label on nz_temp_labelled (label);
+        -- Create a subselect of grid only where relevant
+        drop table if exists nz_temp_g1;
+        create temp table nz_temp_g1 as 
+        select 
+            gs.*, nt.grid_id, nt.i, nt.j, nt.is_building
+        from nz_temp nt
+            join group_small gs on nt.grid_id = any(ids);
         
-        drop table if exists grid_groups;
-        create temp table grid_groups as 
-        with agg_labels as (
+        -- create index on g1
+        create index nz_temp_g1_grid_id on nz_temp_g1(grid_id);
+        create index nz_temp_g1_i_j on nz_temp_g1(j,i);
+        create index nz_temp_g1_ids on nz_temp_g1(ids);
+        create index temp_g1_label on nz_temp_g1(label);
+        
+        -- Join to fetch all surrounding grid cells
+        drop table if exists labels_to_update;
+        create temp table labels_to_update as
+        with boundary_join as (
             select 
-                label, 
-                nz,
-                array_agg(grid_id) as ids
-            from nz_temp_labelled
-            group by label, nz
-            having count(*) < 10
-        ),
-        group_with_grid as (
-            SELECT 
-                fcg.*, 
-                array_length(fcg.ids, 1) as group_count, 
+                label, ids, g1.nz,
                 array_agg(g2.nz) as boundary_nz,
                 min(g2.nz) as min_nz
-            FROM agg_labels fcg
-                join nz_temp g1 on g1.grid_id = any(fcg.ids)
+            from nz_temp_g1 g1
                 join nz_temp g2 on ((g1.i = g2.i+1 and g1.j = g2.j) OR 
                                     (g1.i = g2.i-1 and g1.j = g2.j) OR
                                     (g1.i = g2.i   and g1.j = g2.j-1) OR
-                                    (g1.i = g2.i   and g1.j = g2.j+1)) and not g2.grid_id = any(fcg.ids) 
-            group by 1,2,3	
+                                    (g1.i = g2.i   and g1.j = g2.j+1)) and not g2.grid_id = any(g1.ids) 
+            group by label, ids, g1.nz
         )
-        select g1.i, g1.j, g1.grid_id, gg.min_nz as new_nz, g1.is_building
-        from group_with_grid gg
-            join nz_temp g1 on g1.grid_id = any(gg.ids)
-        where gg.nz < all(boundary_nz);
+        select 
+            label, ids, nz, min_nz
+        from boundary_join
+        where nz < all(boundary_nz); -- only those where all gridcell are higher
+        
+        -- Create index on label
+        create index labels_to_update_label_idx on labels_to_update(label);
+        
+        -- Create a subset of only updating
+        drop table if exists grid_to_update;
+        create temp table grid_to_update as 
+        select 
+            g1.grid_id, g1.i, g1.j, lu.min_nz, g1.is_building
+        from nz_temp_g1 g1
+            join labels_to_update lu on lu.label = g1.label;
+        
+        create index grid_to_update_grid_id on grid_to_update(grid_id);
+        create index grid_to_update_i_j on grid_to_update(j,i);
     """
     cur.execute(sqltext)
+    connection.commit()
 
     # fetch all grid that will be filled
     sqltext = """
-        select i, j, new_nz from grid_groups;
+        select i, j, min_nz from "grid_to_update";
     """
     cur.execute(sqltext)
     missings = cur.fetchall()
     if len(missings) == 0:
         return missings
     progress('Using topo fill with labeling algorithm {} grid was filled', len(missings))
-    for i, j, new_nz in missings:
-        extra_verbose('In filling grid; filling [j, i, new_nz] = [{},{},{}] ', j, i, new_nz)
+    for i, j, min_nz in missings:
+        extra_verbose('In filling grid; filling [j, i, min_nz] = [{},{},{}] ', j, i, min_nz)
 
     # update nz, height in grid
     # TODO: track all height, in case of cct
     debug('Updating nz, height in grid')
     sqltext = f"""
         UPDATE "{cfg.domain.case_schema}"."{cfg.tables.grid}" AS g 
-        SET (height, nz) = (gg.new_nz * {cfg.domain.dz} + {cfg.domain.oro_min}, gg.new_nz)
-        FROM "grid_groups" AS gg
+        SET (height, nz) = (gg.min_nz * {cfg.domain.dz} + {cfg.domain.oro_min}, gg.min_nz)
+        FROM "grid_to_update" AS gg
         WHERE g.i = gg.i AND g.j = gg.j AND NOT is_building
     """
     cur.execute(sqltext)
@@ -168,10 +248,10 @@ def topo_fill_labeled(cfg, connection, cur):
     # TODO: update with real height
     sqltext = f"""
         UPDATE "{cfg.domain.case_schema}"."{cfg.tables.buildings_grid}" bg
-        SET (height, nz) = ((gg.new_nz - g.nz) * {cfg.domain.dz}, gg.new_nz - g.nz)
-        FROM "grid_groups" AS gg
+        SET (height, nz) = ((gg.min_nz - g.nz) * {cfg.domain.dz}, gg.min_nz - g.nz)
+        FROM "grid_to_update" AS gg
             JOIN "{cfg.domain.case_schema}"."{cfg.tables.grid}"  AS g ON g.id = gg.grid_id
-        WHERE gg.is_building AND bg.i = gg.i AND bg.j = gg.j
+        WHERE gg.is_building AND bg.id = gg.grid_id
         """
     cur.execute(sqltext)
     connection.commit()
@@ -400,9 +480,23 @@ def create_grid(cfg, connection, cur):
     sqltext = 'alter table "{}"."{}" ' \
               'add if not exists height double precision, ' \
               'add if not exists nz integer, ' \
-              'add if not exists lid integer' \
+              'add if not exists lid integer, ' \
+              'add if not exists point geometry(point, %s)' \
         .format(cfg.domain.case_schema, cfg.tables.grid)
-    cur.execute(sqltext)
+    cur.execute(sqltext, (cfg.srid_palm,))
+    sql_debug(connection)
+    connection.commit()
+
+    sqltext = f"""
+        update "{cfg.domain.case_schema}"."{cfg.tables.grid}" 
+        set point = st_setsrid(st_makepoint(xcen, ycen), %s)
+    """
+    cur.execute(sqltext, (cfg.srid_palm,))
+    sql_debug(connection)
+    connection.commit()
+
+    # add index
+    cur.execute(f"""create index {cfg.domain.case_schema}_grid_point_geomidx on "{cfg.domain.case_schema}"."{cfg.tables.grid}" using gist(point); """)
     sql_debug(connection)
     connection.commit()
 
@@ -420,6 +514,57 @@ def calculate_grid_extend(cfg, connection, cur):
     grid_ext = cur.fetchone()[0]
 
     return grid_ext
+
+def retile_raster(cfg, connection, cur, rtable):
+    """ Retile inputted raster and add geometry indexes for faster joining. """
+    try:
+        sqltext = f"""
+            select (ST_BandMetaData(rast)).nodatavalue
+            from "{cfg.domain.case_schema}"."{rtable}"
+            limit 1;
+        """
+        cur.execute(sqltext)
+        nodata = cur.fetchone()[0]
+    except:
+        warning('Raster does not have nodata, set to 255')
+        nodata = -1e9
+
+
+    sqltext = f"""
+        drop table if exists "{cfg.domain.case_schema}"."{rtable}_retile";
+        CREATE TABLE "{cfg.domain.case_schema}"."{rtable}_retile" (
+            rid SERIAL PRIMARY KEY,
+            rast RASTER
+        );
+        
+        -- (Optional but recommended) Add an SRID constraint for the new table
+        ALTER TABLE "{cfg.domain.case_schema}"."{rtable}_retile" ADD CONSTRAINT enforce_srid_rast CHECK (ST_SRID(rast) = %s); -- Use cfg.srid_palm here
+        
+        
+        INSERT INTO "{cfg.domain.case_schema}"."{rtable}_retile" (rast)
+        SELECT ST_Tile(ST_Union(rast), 64, 64, true, {nodata})
+        FROM "{cfg.domain.case_schema}"."{rtable}";
+
+        --SELECT AddGeometryColumn ('{cfg.domain.case_schema}','{rtable}','tile_extent',srid,'POLYGON',2);
+        
+        alter table "{cfg.domain.case_schema}"."{rtable}_retile" add column if not exists tile_extent geometry('POLYGON', %s);
+        
+        UPDATE "{cfg.domain.case_schema}"."{rtable}_retile"
+        SET tile_extent = ST_Envelope(rast);
+        
+        -- rename to original name
+        --ALTER TABLE "{cfg.domain.case_schema}"."{rtable}" RENAME TO "{rtable}_original";
+        drop table if exists "{cfg.domain.case_schema}"."{rtable}";
+        ALTER TABLE "{cfg.domain.case_schema}"."{rtable}_retile" RENAME TO "{rtable}";
+
+        CREATE INDEX {cfg.domain.case_schema}_{rtable}_tile_extent_2_idx ON "{cfg.domain.case_schema}"."{rtable}" USING GIST(tile_extent);
+        
+        -- Use this for intersection with geometry and raster
+        --ST_Intersects(raster.tile_extent, geometry.geometry)
+    """
+    cur.execute(sqltext, (cfg.srid_palm,cfg.srid_palm,))
+    sql_debug(connection)
+    connection.commit()
 
 def copy_vectors_from_input(grid_ext, cfg, connection, cur):
     """ Copy inputs vector layers from input schema.
@@ -501,8 +646,15 @@ def copy_vectors_from_input(grid_ext, cfg, connection, cur):
             sqltext = 'insert into "{}"."{}" select * from "{}"."{}" where ST_Intersects(ST_Transform(geom, %s), %s)' \
                 .format(cfg.domain.case_schema, rel, cfg.input_schema, rel)
             cur.execute(sqltext, (cfg.srid_palm, grid_ext,))
-            sqltext = 'update "{}"."{}" set geom = ST_Transform(geom, %s)'.format(cfg.domain.case_schema, rel)
-            cur.execute(sqltext, (cfg.srid_palm,))
+            sqltext = 'select UpdateGeometrySRID(%s, %s, %s, %s)'
+            cur.execute(sqltext, (cfg.domain.case_schema, rel, 'geom', cfg.srid_palm,))
+
+        # Check geometries and make them valid
+        # if rel == 'landcover':
+        #     verbose('Make geometry valid')
+        #     cur.execute('update "{}"."{}" set geom = st_collectionextract(st_makevalid(geom),3)'.format(cfg.domain.case_schema, rel))
+        #     sql_debug(connection)
+        #     connection.commit()
 
         # check if table is empty or not
         cur.execute('SELECT COUNT(*) FROM "{}"."{}"'.format(cfg.domain.case_schema, rel))
@@ -590,7 +742,7 @@ def copy_rasters_from_input(grid_ext, cfg, connection, cur):
         params: grid_ext: rectangle polygon around grid, created in calculate_grid_extend function
     """
     rtables = [cfg.tables.dem, cfg.tables.buildings_height, cfg.tables.extras,
-               cfg.tables.lai, cfg.tables.canopy_height]
+               cfg.tables.lai, cfg.tables.canopy_height, cfg.tables.impervious]
     rtabs = []
     for rel in rtables:
         # check if table exists in input source schema
@@ -602,15 +754,16 @@ def copy_rasters_from_input(grid_ext, cfg, connection, cur):
         if has_rel:
             rtabs.append(rel)
         else:
-            error('Table {} does not exist in input schema', rel)
+            warning('Table {} does not exist in input schema', rel)
             continue
 
         debug('Transform srid of input {} and limit it to grid', rel)
         # drop table if exists
-        sqltext = 'drop table if exists "{}"."{}"'.format(cfg.domain.case_schema, rel)
+        sqltext = 'drop table if exists "{}"."{}" cascade'.format(cfg.domain.case_schema, rel)
         cur.execute(sqltext)
-        sqltext = 'create table "{}"."{}" (like "{}"."{}" including all excluding constraints)' \
-            .format(cfg.domain.case_schema, rel, cfg.input_schema, rel)
+        # sqltext = 'create table "{}"."{}" (like "{}"."{}" including all excluding constraints);' \
+        sqltext = 'create table "{}"."{}" as select * from "{}"."{}" where 1=2;' \
+                    .format(cfg.domain.case_schema, rel, cfg.input_schema, rel)
         cur.execute(sqltext)
         sql_debug(connection)
         sqltext = 'ALTER TABLE "{}"."{}" OWNER TO {}'.format(cfg.domain.case_schema, rel, cfg.pg_owner)
@@ -622,7 +775,10 @@ def copy_rasters_from_input(grid_ext, cfg, connection, cur):
         # select srid from "raster_columns" where r_table_catalog = 'palm_static' and r_table_schema = 'inputs_tunnel'
         # and r_table_name = 'buildings' and r_raster_column = 'rast'
         cur.execute(sqltext)
-        srid_rel = cur.fetchone()[0]
+        try:
+            srid_rel = cur.fetchone()[0]
+        except:
+            srid_rel = 3035
         if srid_rel == 0:
             srid_rel = cfg.srid_input
             # update relation SRID
@@ -630,15 +786,38 @@ def copy_rasters_from_input(grid_ext, cfg, connection, cur):
             cur.execute(sqltext, (cfg.input_schema, rel, 'rast', cfg.srid_input,))
         # transform and clip the raster layer
         if not srid_rel == cfg.srid_input:
-            sqltext = 'insert into "{0}"."{2}" (rid, rast) ' \
-                      'select rid, ST_Transform(rast, %s) ' \
-                      ' from "{1}"."{2}" ' \
-                      ' where ST_Intersects(ST_Transform(rast, %s), %s::geometry)' \
-                .format(cfg.domain.case_schema, cfg.input_schema, rel)
+            sqltext = f"""
+                with raster_transform as (
+                    select ST_Transform(t.rast, %s) rast
+                    from "{cfg.input_schema}"."{rel}" t
+                    where ST_Intersects(ST_Transform(t.rast, %s), %s::geometry)
+                ),
+                reference_raster AS (
+                    SELECT
+                        ST_UpperLeftX(rast) AS ulx,
+                        ST_UpperLeftY(rast) AS uly,
+                        ST_ScaleX(rast) AS scx,
+                        ST_ScaleY(rast) AS scy
+                    FROM
+                       raster_transform
+                    LIMIT 1
+                )
+                insert into "{cfg.domain.case_schema}"."{rel}" (rast)
+                SELECT
+                    ST_Union(
+                        ST_SnapToGrid(
+                            t.rast,
+                            r.ulx, r.uly, r.scx, r.scy
+                        )
+                    )
+                FROM
+                    raster_transform AS t,
+                    reference_raster AS r;
+            """
             cur.execute(sqltext, (cfg.srid_palm, cfg.srid_palm, grid_ext,))
         else:
-            sqltext = 'insert into "{0}"."{2}" (rid, rast) ' \
-                      'select rid, rast ' \
+            sqltext = 'insert into "{0}"."{2}" (rast) ' \
+                      'select st_union(rast) ' \
                       ' from "{1}"."{2}" ' \
                       ' where ST_Intersects(rast, %s::geometry)' \
                 .format(cfg.domain.case_schema, cfg.input_schema, rel)
@@ -646,6 +825,8 @@ def copy_rasters_from_input(grid_ext, cfg, connection, cur):
 
         sql_debug(connection)
         connection.commit()
+
+        retile_raster(cfg, connection, cur, rel)
 
         # check if table is empty or not
         cur.execute('SELECT COUNT(*) FROM "{}"."{}"'.format(cfg.domain.case_schema, rel))
@@ -667,10 +848,10 @@ def check_surface_params(cfg, connection, cur):
                 ' SELECT column_name '
                 ' FROM information_schema.columns '
                 ' WHERE table_schema=%s AND table_name=%s AND column_name=%s)',
-                (cfg.input_schema, cfg.tables.landcover, cfg.landcover_params_var,))
+                (cfg.domain.case_schema, cfg.tables.landcover, 'catland',))
     rel_exists_katland = cur.fetchone()[0]
     if rel_exists and rel_exists_katland:
-        progress('Surface params and katland parameter in landcover detected in Input Schema, apply LOD2 routines')
+        progress('Surface params and catland parameter in landcover detected in Input Schema, apply LOD2 routines')
         cfg._settings['has_surface_params'] = True
         sqltext = 'CREATE TABLE "{}"."{}" (LIKE "{}"."{}" INCLUDING ALL)' \
             .format(cfg.domain.case_schema, cfg.tables.surface_params, cfg.input_schema, cfg.tables.surface_params)
@@ -715,9 +896,9 @@ def check_buildings(cfg, connection, cur, rtabs, vtabs, grid_ext):
             sqltext = f"""
                 UPDATE "{cfg.domain.case_schema}"."{cfg.tables.landcover}" AS l 
                 SET type = 202, 
-                    katland = 32,
+                    catland = 32,
                     albedo = 0.1,
-                    emisivita = 0.93
+                    emissivity = 0.93
                 WHERE type >= {cfg.type_range.building_min} 
                     AND ST_Distance(l.geom, ST_Boundary(%s::geometry)) < {cfg.force_building_boundary_dist * cfg.domain.dx}
                 """
@@ -814,10 +995,10 @@ def calculate_terrain_height(cfg, connection, cur):
     else:
         sqltext = 'CREATE TEMP TABLE "temp" AS ' \
                   'SELECT g.i, g.j, r.height, cast(0 AS INTEGER) AS nz, g.geom ' \
-                  'FROM (SELECT i, j, xcen, ycen, geom FROM "{0}"."{1}") AS g ' \
+                  'FROM (SELECT i, j, xcen, ycen, geom, point FROM "{0}"."{1}") AS g ' \
                   'JOIN LATERAL ( ' \
-                  'SELECT ST_NearestValue(rast, ST_SetSRID(ST_Point(g.xcen,g.ycen), %s)) AS height ' \
-                  'FROM "{0}"."{2}" WHERE ST_Intersects(rast, ST_SetSRID(ST_Point(g.xcen,g.ycen), %s))' \
+                  'SELECT ST_NearestValue(rast, g.point) AS height ' \
+                  'FROM "{0}"."{2}" WHERE ST_Intersects(tile_extent, g.point)' \
                   'LIMIT 1) r on true ' \
                   'WHERE r.height IS NOT NULL'
         sqltext = sqltext.format(cfg.domain.case_schema, cfg.tables.grid, cfg.tables.dem)
@@ -846,15 +1027,15 @@ def calculate_terrain_height(cfg, connection, cur):
             # sqltext = 'UPDATE "{0}"."{1}" g ' \
             #           'SET height = (SELECT gg.height FROM "{0}"."{1}" AS gg' \
             #           '  WHERE gg.height IS NOT NULL ' \
-            #           '  ORDER BY ST_Distance(ST_SetSrid(ST_Point(g.xcen,  g.ycen), %s), ' \
-            #           '                       ST_SetSrid(ST_Point(gg.xcen,gg.ycen), %s))) ' \
+            #           '  ORDER BY ST_Distance(g.point, ' \
+            #           '                       gg.point)) ' \
             #           ' WHERE g.height IS NULL'.format(cfg.domain.case_schema, cfg.tables.grid)
             # cur.execute(sqltext, (cfg.srid_palm, cfg.srid_palm,))
             # sql_debug(connection)
             # connection.commit()
 
             sqltext = 'UPDATE "{0}"."{1}" g ' \
-                      'SET height = (SELECT ST_Value(rast, ST_SetSRID(ST_Point(g.xcen,g.ycen), %s)) ' \
+                      'SET height = (SELECT ST_Value(rast, point) ' \
                       ' FROM "{0}"."{2}" LIMIT 1) ' \
                       'WHERE g.height IS NULL'.format(cfg.domain.case_schema, cfg.tables.grid, cfg.tables.dem)
             cur.execute(sqltext, (cfg.srid_palm,))
@@ -913,17 +1094,32 @@ def connect_landcover_grid(cfg, connection, cur):
 
     """ Join landcover with grid """
     change_log_level(cfg.logs.level_landcover)
-    sqltext = 'UPDATE "{0}"."{1}" ' \
-              'SET lid = (SELECT l.lid FROM "{0}"."{2}" AS l ' \
-              'WHERE ST_Within( ST_SetSRID(ST_Point(xcen,ycen),%s), l.geom) LIMIT 1)'
-    sqltext = sqltext.format(cfg.domain.case_schema, cfg.tables.grid, cfg.tables.landcover)
-    cur.execute(sqltext, (cfg.srid_palm,))
+    sqltext = f"""
+        drop table if exists lid_grid;
+        create temp table lid_grid as 
+            select 
+                g.id,
+                l.lid
+            from "{cfg.domain.case_schema}"."{cfg.tables.grid}" g
+                join lateral (select l.lid 
+                             from "{cfg.domain.case_schema}"."{cfg.tables.landcover}" l
+                             where st_intersects(g.point, l.geom)
+                             limit 1) l on true
+        ;
+        create index lid_grid_gid_idx on lid_grid(id);
+        
+        update "{cfg.domain.case_schema}"."{cfg.tables.grid}" g
+        set lid = lg.lid
+        from lid_grid lg
+        where lg.id = g.id;
+    """
+    cur.execute(sqltext)
     sql_debug(connection)
     connection.commit()
     # Remark: lid can be None in case that parts of the domain are not covered by landcover shapes!
     sqltext = 'update "{0}"."{1}" g ' \
               ' set lid = (select l.lid from "{0}"."{2}" l ' \
-              ' order by ST_Distance(l.geom, ST_SetSRID(ST_Point(g.xcen,g.ycen),%s)) limit 1) ' \
+              ' order by ST_Distance(l.geom, g.point) limit 1) ' \
               ' where g.lid is null'
     sqltext = sqltext.format(cfg.domain.case_schema, cfg.tables.grid, cfg.tables.landcover)
     cur.execute(sqltext, (cfg.srid_palm,))
@@ -965,7 +1161,7 @@ def connect_landcover_grid(cfg, connection, cur):
         update  "{cfg.domain.case_schema}"."{cfg.tables.grid}" g 
         set lid = (select l.lid from "{cfg.domain.case_schema}"."{cfg.tables.landcover}" l 
                      where not l.type between {cfg.type_range.building_min} and {cfg.type_range.building_max}
-                     order by ST_Distance(l.geom, ST_SetSRID(ST_Point(g.xcen,g.ycen), %s)) limit 1)
+                     order by ST_Distance(l.geom, g.point) limit 1)
         where id in (select id from building2drop)
         """
         cur.execute(sqltext, (cfg.srid_palm,))
@@ -1159,7 +1355,7 @@ def fill_cortyard(cfg, connection, cur):
     sqltext = 'WITH ll AS ( ' \
               ' SELECT lid  ' \
               ' FROM "{0}"."{1}" AS l' \
-              ' WHERE (SELECT COUNT(*) FROM "{0}"."{1}" AS nb WHERE type BETWEEN 0 AND 899 AND ST_Touches(nb.geom, l.geom) AND nb.lid != l.lid) = 0  ' \
+              ' WHERE (SELECT COUNT(*) FROM "{0}"."{1}" AS nb WHERE type BETWEEN 0 AND 899 AND ST_Touches(st_buffer(nb.geom, 0.00001), l.geom) AND nb.lid != l.lid) = 0  ' \
               '        ' \
               '        AND l.type BETWEEN 0 AND 899' \
               ' ) ' \
@@ -1181,17 +1377,18 @@ def fill_cortyard(cfg, connection, cur):
     debug('Modification of those cortyard into nearest building type')
     verbose('In landcover')
     if cfg.lod2:
-        sqltext = 'UPDATE "{0}"."{1}" AS l SET (type, katland, albedo, emisivita) = ' \
-                  ' (SELECT type, katland, albedo, emisivita FROM "{0}"."{1}" AS b ' \
+        sqltext = 'UPDATE "{0}"."{1}" AS l SET (type, catland, albedo, emissivity) = ' \
+                  ' (SELECT type, catland, albedo, emissivity FROM "{0}"."{1}" AS b ' \
                   '   WHERE type BETWEEN 900 AND 999 ' \
                   '   ORDER BY ST_Distance(l.geom, b.geom) LIMIT 1) ' \
-                  'WHERE lid IN {2}'.format(cfg.domain.case_schema, cfg.tables.landcover, tuple(lids_list))
+                  'WHERE lid IN {2}'.format(cfg.domain.case_schema, cfg.tables.landcover, tuple(lids_list) if len(lids_list) > 1 else f"({lids_list[0]})",
+                                            )
     else:
         sqltext = 'UPDATE "{0}"."{1}" AS l SET (type) = ' \
                   ' (SELECT type FROM "{0}"."{1}" AS b ' \
                   '   WHERE type BETWEEN 900 AND 999 ' \
                   '   ORDER BY ST_Distance(l.geom, b.geom) LIMIT 1) ' \
-                  'WHERE lid IN {2}'.format(cfg.domain.case_schema, cfg.tables.landcover, tuple(lids_list))
+                  'WHERE lid IN {2}'.format(cfg.domain.case_schema, cfg.tables.landcover, tuple(lids_list) if len(lids_list) > 1 else f"({lids_list[0]})")
     cur.execute(sqltext,)
     sql_debug(connection)
     connection.commit()
@@ -1678,8 +1875,8 @@ def connect_buildings_height(cfg, connection, cur):
     progress('Calculate building heights')
     debug('Creating table of buildings grid')
     sqltext = 'CREATE TABLE "{0}"."{1}" AS SELECT gg.id, gg.i, gg.j, gg.xcen, gg.ycen,' \
-              '      {4} AS azimuth, 0.0 AS zenith, gg.geom, gg.lid, gg.type' \
-              '      FROM (select g.id, g.i, g.j, g.xcen, g.ycen, g.geom, g.lid, l.type' \
+              '      {4} AS azimuth, 0.0 AS zenith, gg.geom, gg.point, gg.lid, gg.type' \
+              '      FROM (select g.id, g.i, g.j, g.xcen, g.ycen, g.geom, g.point, g.lid, l.type' \
               '      FROM "{0}"."{2}" as g left outer join "{0}"."{3}" as l on l.lid = g.lid' \
               '      WHERE type BETWEEN {5} AND {6}) AS gg'
     sqltext = sqltext.format(cfg.domain.case_schema, cfg.tables.buildings_grid,
@@ -1718,63 +1915,57 @@ def connect_buildings_height(cfg, connection, cur):
     rel_exists = cur.fetchone()[0]
     if rel_exists:
         debug('Updating building_grids heights from buildings raster')
-        sqltext = 'update "{0}"."{1}" as bg ' \
-                  ' set height = ( select val from ( ' \
-                  ' select (ST_PixelAsPoints(b.rast)).geom as geom, (ST_PixelAsPoints(b.rast)).val as val ' \
-                  ' from "{0}"."{2}" b where ST_intersects(b.rast,  bg.geom) ) bp ' \
-                  ' where ST_Intersects(bp.geom, bg.geom) ' \
-                  ' order by ST_Distance(bp.geom, ST_SetSRID(ST_Point(bg.xcen,bg.ycen), %s)) ' \
-                  ' limit 1 ) where bg.height is null or bg.height = 0'\
-                  .format(cfg.domain.case_schema, cfg.tables.buildings_grid, cfg.tables.buildings_height)
-        cur.execute(sqltext, (cfg.srid_palm,))
+        # in the first iteration join on intersection
+        verbose('Update building height')
+        sqltext = f"""
+            drop table if exists temp_building;
+            create temp table temp_building as 
+            select bg.id, b.height
+            from "{cfg.domain.case_schema}"."{cfg.tables.buildings_grid}" bg
+                join lateral (select ST_NearestValue(rast, bg.point) AS height
+                              from "{cfg.domain.case_schema}"."{cfg.tables.buildings_height}" b
+                              where ST_Intersects(b.tile_extent, bg.point)
+                              limit 1) b on true;
+                              
+            alter table temp_building add primary key (id);
+            
+            update "{cfg.domain.case_schema}"."{cfg.tables.buildings_grid}" bg
+            set height = tb.height
+            from temp_building tb
+            where tb.id = bg.id;
+        """
+        cur.execute(sqltext)
         sql_debug(connection)
         connection.commit()
 
-        # fill missing heights by the value from the nearest filled gridpoint of the same building
-        debug('Filling missing heights')
-        sqltext = 'update "{0}"."{1}" as bg ' \
-                  ' set height = (' \
-                  '  select bn.height from "{0}"."{2}" as bn ' \
-                  '   where bn.lid = bg.lid and (bn.height != 0 or (bn.height is not null and bn.height != 0))' \
-                  '   order by ST_Distance(ST_SetSrid(ST_Point(bn.xcen,bn.ycen), %s), ' \
-                  '                        ST_SetSrid(ST_Point(bg.xcen,bg.ycen), %s)) ' \
-                  '   limit 1 ) ' \
-                  ' where bg.height is null or bg.height = 0'\
-                  .format(cfg.domain.case_schema, cfg.tables.buildings_grid, cfg.tables.buildings_grid)
-        cur.execute(sqltext, (cfg.srid_palm, cfg.srid_palm, ))
-        sql_debug(connection)
-        connection.commit()
-
-        # fill remaining missing heights by the value from the nearest filled gridpoint of any building to some distance
-        debug('Fill remaining heights')
-        sqltext2 = 'update "{0}"."{1}" as bg ' \
-                  ' set height = (' \
-                  '  select bn.height from "{0}"."{2}" as bn ' \
-                  '   where (bn.height != 0 or (bn.height is not null and bn.height != 0)) and ' \
-                  '         ST_Distance(ST_SetSrid(ST_Point(bn.xcen,bn.ycen), %s), ' \
-                  '                     ST_SetSrid(ST_Point(bg.xcen,bg.ycen), %s)) <= %s ' \
-                  '   order by ST_Distance(ST_SetSrid(ST_Point(bn.xcen,bn.ycen), %s), ' \
-                  '                        ST_SetSrid(ST_Point(bg.xcen,bg.ycen), %s)) ' \
-                  '   limit 1 ) ' \
-                  ' where bg.height is null or bg.height = 0 '\
-                  .format(cfg.domain.case_schema, cfg.tables.buildings_grid, cfg.tables.buildings_grid)
-        cur.execute(sqltext2, (cfg.srid_palm, cfg.srid_palm, cfg.maxbuildingdisance, cfg.srid_palm, cfg.srid_palm, ))
-        sql_debug(connection)
-        connection.commit()
-
-        # repeat once more filling of missing heights by the value
-        # from the nearest filled gridpoint of the same building (to complete the buildings filled in previous step)
-        verbose('Do it one more to fill grid points')
-        cur.execute(sqltext, (cfg.srid_palm, cfg.srid_palm, ))
-        sql_debug(connection)
-        connection.commit()
-
-    # # fill remain with default height
-    # sqltext = 'UPDATE "{0}"."{1}" SET height = {2} WHERE height IS NULL OR height = 0.0'.format(
-    #             cfg.domain.case_schema, cfg.tables.buildings_grid, cfg.default_height)
-    # cur.execute(sqltext)
-    # sql_debug(connection)
-    # connection.commit()
+        # fill missing heights by the value from the nearest filled gridpoint of the same building and then from any building nearby
+        for lid_condition in [' and bn.lid = bg.lid ', '']:
+            for irange in range(1, 5):
+                # fill remaining missing heights by the value from the nearest filled gridpoint of any building to some distance
+                debug('Fill remaining heights')
+                # -- use this for optimization, finish
+                sqltext = f"""
+                    drop table if exists fill_near_building;
+                    create temp table fill_near_building as
+                    select
+                        bn.id, bg.height
+                    from "{cfg.domain.case_schema}"."{cfg.tables.buildings_grid}" bn
+                        join "{cfg.domain.case_schema}"."{cfg.tables.buildings_grid}" bg on
+                            abs(bn.i - bg.i) <= {irange} and abs(bn.j - bg.j) <= {irange}
+                            {lid_condition}
+                    where bn.height is null;
+                    
+                    create index build_near_fill_ji_idx ON fill_near_building (id);
+                    
+                    update "{cfg.domain.case_schema}"."{cfg.tables.buildings_grid}" bn
+                    set height = fn.height
+                    from fill_near_building fn
+                    where fn.height is not null and bn.height is null
+                        and fn.id = bn.id;
+                """
+                cur.execute(sqltext)
+                sql_debug(connection)
+                connection.commit()
 
     # fill remain missing with default according to its type
     debug('Fill all remaining missing heights using user configuration')
@@ -1794,7 +1985,6 @@ def connect_buildings_height(cfg, connection, cur):
         cur.execute(sqltext)
         sql_debug(connection)
         connection.commit()
-
 
     # calculate nz
     debug('Calculation of nz')
@@ -1840,7 +2030,7 @@ def connect_buildings_height(cfg, connection, cur):
         sqltext = 'UPDATE "{0}"."{1}" ' \
                   ' SET has_bottom = True, lid_extra = shp.gid ' \
                   ' FROM "{0}"."{2}" AS shp' \
-                  ' WHERE ST_Within( ST_SetSRID(ST_Point(xcen,ycen),%s), shp.geom) AND shp.class3d IN (%s, %s)'.format(
+                  ' WHERE ST_Within( point, shp.geom) AND shp.class3d IN (%s, %s)'.format(
             cfg.domain.case_schema, cfg.tables.buildings_grid, cfg.tables.extras_shp)
         cur.execute(sqltext, (cfg.srid_palm, cfg.build_3d.overhanging, cfg.build_3d.passage))
         sql_debug(connection)
@@ -1848,8 +2038,8 @@ def connect_buildings_height(cfg, connection, cur):
 
         debug('Process bottom height of buildings')
         sqltext = 'UPDATE "{0}"."{1}" AS bd ' \
-                  ' SET height_bottom = ( SELECT ST_Value(rast, ST_SetSRID( ST_Point(bd.xcen,bd.ycen) , %s)) ' \
-                  ' FROM "{0}"."{2}" AS b WHERE ST_intersects(b.rast,  bd.geom) LIMIT 1) ' \
+                  ' SET height_bottom = ( SELECT ST_Value(rast, bg.point) ' \
+                  ' FROM "{0}"."{2}" AS b WHERE ST_intersects(b.tile_extent,  bd.geom) LIMIT 1) ' \
                   ' WHERE bd.has_bottom' \
             .format(cfg.domain.case_schema, cfg.tables.buildings_grid, cfg.tables.extras)
         cur.execute(sqltext, (cfg.srid_palm,))
@@ -1860,8 +2050,7 @@ def connect_buildings_height(cfg, connection, cur):
         sqltext = 'UPDATE "{0}"."{1}" AS bd ' \
                   ' SET height_bottom = ( SELECT bdd.height_bottom FROM "{0}"."{1}" AS bdd ' \
                   '   WHERE (bdd.height_bottom != 0 OR (bdd.height_bottom IS NOT NULL AND bdd.height_bottom != 0)) ' \
-                  '   ORDER BY ST_Distance(ST_SetSrid(ST_Point(bdd.xcen,bdd.ycen), %s), ' \
-                  '                        ST_SetSrid(ST_Point(bd.xcen, bd.ycen),  %s)) ' \
+                  '   ORDER BY ST_Distance(bdd.point, bd.point) ' \
                   '   LIMIT 1) ' \
                   ' WHERE bd.has_bottom AND bd.height_bottom IS NULL' \
             .format(cfg.domain.case_schema, cfg.tables.buildings_grid)
@@ -1892,7 +2081,7 @@ def connect_buildings_height(cfg, connection, cur):
         debug('Connect bridge extras_shp')
         sqltext = 'UPDATE "{0}"."{1}" ' \
                   ' SET is_bridge = TRUE, lid_extra = shp.gid FROM "{0}"."{2}" AS shp' \
-                  ' WHERE ST_Within( ST_SetSRID(ST_Point(xcen,ycen),%s), shp.geom) AND shp.class3d = %s' \
+                  ' WHERE ST_Within( point, shp.geom) AND shp.class3d = %s' \
                   ' AND lid_extra IS NULL'.format(
             cfg.domain.case_schema, cfg.tables.buildings_grid, cfg.tables.extras_shp)
         cur.execute(sqltext, (cfg.srid_palm, cfg.build_3d.bridge))
@@ -1901,8 +2090,7 @@ def connect_buildings_height(cfg, connection, cur):
         sqltext = 'UPDATE "{0}"."{1}" AS b ' \
                   ' SET (is_bridge, lid_extra) = (SELECT TRUE, bb.lid_extra FROM "{0}"."{1}" AS bb ' \
                   ' WHERE bb.lid_extra IS NOT NULL ' \
-                  ' ORDER BY ST_Distance(ST_SetSRID(ST_Point(b.xcen,  b.ycen), %s),' \
-                  '                      ST_SetSRID(ST_Point(bb.xcen,bb.ycen), %s)) ' \
+                  ' ORDER BY ST_Distance(b.point, bb.point) ' \
                   ' LIMIT 1) ' \
                   ' WHERE b.type = 907 AND lid_extra IS NULL'
         sqltext = sqltext.format(cfg.domain.case_schema, cfg.tables.buildings_grid)
@@ -1915,9 +2103,9 @@ def connect_buildings_height(cfg, connection, cur):
         sqltext = 'UPDATE "{0}"."{1}" AS br ' \
                   ' SET (height, height_bottom) = ( SELECT val, val - {3} FROM ( ' \
                   ' SELECT (ST_PixelAsPoints(b.rast)).geom AS geom, (ST_PixelAsPoints(b.rast)).val AS val ' \
-                  ' FROM "{0}"."{2}" AS b WHERE ST_intersects(b.rast,  br.geom) ) AS bp ' \
+                  ' FROM "{0}"."{2}" AS b WHERE ST_intersects(b.tile_extent,  br.geom) ) AS bp ' \
                   ' WHERE ST_Intersects(bp.geom, br.geom) ' \
-                  ' ORDER BY ST_Distance(bp.geom, ST_SetSRID(ST_Point(br.xcen,br.ycen), %s)) ' \
+                  ' ORDER BY ST_Distance(bp.geom, br.point) ' \
                   ' LIMIT 1 ) ' \
                   ' WHERE is_bridge' \
             .format(cfg.domain.case_schema, cfg.tables.buildings_grid, cfg.tables.extras, cfg.build_3d.bridge_width)
@@ -1930,8 +2118,7 @@ def connect_buildings_height(cfg, connection, cur):
                   ' SET (height, height_bottom) = (' \
                   '  SELECT brn.height, brn.height_bottom FROM "{0}"."{2}" AS brn ' \
                   '   WHERE (brn.height != 0 OR (brn.height IS NOT NULL AND brn.height != 0)) ' \
-                  '   ORDER BY ST_Distance(ST_SetSrid(ST_Point(brn.xcen,brn.ycen), %s), ' \
-                  '                        ST_SetSrid(ST_Point(br.xcen, br.ycen), %s)) ' \
+                  '   ORDER BY ST_Distance(brn.point, br.point) ' \
                   '   LIMIT 1 ) ' \
                   ' WHERE (br.height IS NULL OR br.height = 0) AND br.is_bridge ' \
             .format(cfg.domain.case_schema, cfg.tables.buildings_grid, cfg.tables.buildings_grid)
@@ -2049,10 +2236,16 @@ def connect_buildings_height(cfg, connection, cur):
         all_filled.append(filled_grids)
 
     # Fill grid using label algorithm
+    max_iteration = 20
+    iteration = 0
     if cfg.topo_fill_label:
         topo_label_filled = [0,0,0]
         while len(topo_label_filled) > 0:
             topo_label_filled = topo_fill_labeled(cfg, connection, cur)
+            iteration += 1
+            if iteration > max_iteration:
+                debug('Too many iterations in topo fill label')
+                break
 
 
     # Fill buildings with additional algorithm
@@ -2088,11 +2281,36 @@ def connect_roofs(cfg, connection, cur):
 
     sqltext = 'UPDATE "{0}"."{1}" b SET rid = ' \
               '(SELECT gid FROM "{0}"."{2}" AS r ' \
-              ' ORDER BY ST_Distance(r.geom, ST_SetSRID(ST_Point(b.xcen,b.ycen),%s)) LIMIT 1)'
+              ' WHERE ST_Intersects(r.geom, point) ' \
+              ' ORDER BY ST_Distance(r.geom, point) LIMIT 1)'
     sqltext = sqltext.format(cfg.domain.case_schema, cfg.tables.buildings_grid, cfg.tables.roofs)
     cur.execute(sqltext, (cfg.srid_palm,))
     sql_debug(connection)
     connection.commit()
+
+    # Update missing rid
+    for neigbors in [2, 3, 50]:
+        sqltext = f"""
+            drop table if exists update_rid;
+            create temp table update_rid as 
+            select 
+                bg.id , bg1.rid
+            from "{cfg.domain.case_schema}"."{cfg.tables.buildings_grid}" bg
+                join "{cfg.domain.case_schema}"."{cfg.tables.buildings_grid}" bg1 on abs(bg.i-bg1.i) < {neigbors} and abs(bg.j - bg1.j) < {neigbors} and bg.id <> bg1.id
+            where bg.rid is null
+                and bg1.rid is not null;
+            
+            create index update_rid_idx on update_rid(id);
+            
+            update "{cfg.domain.case_schema}"."{cfg.tables.buildings_grid}" bg
+            set rid = ur.rid
+            from update_rid ur
+            where bg.id = ur.id;
+        """
+        cur.execute(sqltext)
+        sql_debug(connection)
+        connection.commit()
+
 
 def connect_walls(cfg, connection, cur, vtabs):
     """ Connect walls lines with created building walls """
@@ -2365,3 +2583,38 @@ def prepare_domain_extends(cfg, connection, cur):
     cfg.domain._settings['origin_lon'] = origin_lon
     cfg.domain._settings['origin_lat'] = origin_lat
     debug('Domain origin lon,lat: {}, {}', origin_lon, origin_lat)
+
+def check_impervious_grids(cfg, connection, cur, rtabs):
+    """ A function to check if impervious table is present.
+        If yes, it modifies surface with impervious > 50 and type 202 into vegetation.
+    """
+    debug('Checking impervious raster')
+    if cfg.tables.impervious in rtabs:
+        progress('impervious is present in table')
+        cfg._settings['impervious'] = True
+        query = f"""
+            drop table if exists impervious_correction;
+            create temp table impervious_correction as
+            select 
+                g.id, 3 as new_type
+            from {cfg.domain.case_schema}.{cfg.tables.grid}  g
+                join {cfg.domain.case_schema}.{cfg.tables.landcover}  l on l.lid = g.lid
+                JOIN LATERAL (sELECT ST_NearestValue(rast, g.point) AS impervious_value
+                              FROM {cfg.domain.case_schema}.{cfg.tables.impervious} 
+                              WHERE ST_Intersects(tile_extent, g.point)
+                              LIMIT 1) r on true 
+            where l.type = 202
+                and r.impervious_value <= 50;
+        """
+    else:
+        cfg._settings['impervious'] = False
+        query = """
+            drop table if exists impervious_correction;
+            create temp table impervious_correction as
+            select 
+                -999999 as id, 103 as new_type
+        """
+
+    cur.execute(query)
+    sql_debug(connection)
+    connection.commit()

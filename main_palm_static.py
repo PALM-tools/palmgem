@@ -91,6 +91,7 @@ grid_ext = calculate_grid_extend(cfg, connection, cur)
 
 progress('Coping and transforming data from inputs, vector data')
 vtabs = copy_vectors_from_input(grid_ext, cfg, connection, cur)
+rename_columns(vtabs, cfg, connection, cur)
 
 progress('Coping and transforming data from inputs, raster data')
 rtabs = copy_rasters_from_input(grid_ext, cfg, connection, cur)
@@ -114,7 +115,7 @@ calculate_origin_z_oro_min(cfg, connection, cur)
 progress('Connect landcover to grid')
 connect_landcover_grid(cfg, connection, cur)
 
-if cfg.cortyard_fill.apply:
+if cfg.cortyard_fill.apply and not cfg.do_cct:
     progress('Fill cortyards smaller than {} grid cells', cfg.cortyard_fill.count)
     fill_cortyard(cfg, connection, cur)
 
@@ -124,6 +125,10 @@ if cfg.fill_missing_holes:
 
 progress('Processing building elevation model BEM')
 connect_buildings_height(cfg, connection, cur)
+
+if cfg.do_cct:
+    progress('Generate outer walls and roofs for cutcell topo purpouses')
+    create_outer_walls_and_roofs_cct(cfg, connection, cur)
 
 if cfg.lod2:
     progress('Connection building roofs')
@@ -140,6 +145,8 @@ if cfg.has_trees:
 if cfg.canopy.using_lai:
     progress('Processing LAI and canopy height into LAD')
     process_lai(cfg, connection, cur)
+
+check_impervious_grids(cfg, connection, cur, rtabs)
 
 progress('Done with preparation of geo inputs')
 progress('Process data into netCDF4 static driver according to PALM Input Data Standard')
@@ -192,6 +199,9 @@ if not cfg.slurb:
         write_albedo_pars(ncfile, cfg, connection, cur)
 else:
     write_mask_usm(ncfile, cfg, connection, cur)
+
+if not cfg.lod2 and cfg.prepare_albedo_type:
+    write_albedo_pars_config(ncfile, cfg, connection, cur)
 
 if cfg.has_trees:
     progress('Writing lad, bad')

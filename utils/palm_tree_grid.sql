@@ -100,12 +100,12 @@ begin
     ret = false;
     -- name of the fiels in tree table
     tree_id = 'gid';  -- tid
-    tree_height = 'vysstr'; -- th
-    tree_trunk_height = 'vyskmen'; -- tb
-    tree_crown_radius = 'polokor'; -- tr
-    tree_trunk_radius = 'polokmen'; -- tt
-    tree_crown_shape = 'tvarkor'; -- ts
-    tree_coniferous = 'typstr'; -- tc
+    tree_height = 'treeh'; -- th
+    tree_trunk_height = 'trunkh'; -- tb
+    tree_crown_radius = 'crownr'; -- tr
+    tree_trunk_radius = 'trunkr'; -- tt
+    tree_crown_shape = 'crownshp'; -- ts
+    tree_coniferous = 'tree_type'; -- tc
     tree_lad = 'ladens'; -- tl
 
     -- allocate lad array and hv array
@@ -125,25 +125,27 @@ begin
     if tree_lad_exists then
 	    text1 = format('%I', tree_lad);
 	else
-        text1 = format('case when %I = 1 then ''1.6'' else ''1.0'' end', tree_coniferous);
+        text1 = format('case when %I  = 1 :: varchar then ''1.6'' else ''1.0'' end', tree_coniferous);
 	end if;
     -- formula for calculation of lad reduction - leaf and coniferous tree
     text2 = format('case when %I = ''0'' then %s else 1.0 end', tree_coniferous, lad_reduction);
     -- tree information select
-    sqltext = format('select %I, %I, %I, %I, %I, %I, ' || text1 || ', ' || text2 ||
+    sqltext = format('select %I, %I, %I, %I, %I, ' || text1 || ', ' || text2 ||
                      ', (ST_Dump(geom)).geom, ST_X((ST_Dump(geom)).geom), ST_Y((ST_Dump(geom)).geom) ' ||
-                     ' from %I.%I',
-                     tree_id, tree_height, tree_trunk_height, tree_crown_radius, tree_crown_shape, tree_coniferous,
-					 case_schema, tree_table);
+                     ' from %I.%I' ||
+                     ' where %I > 0 and %I > 0 ',
+                     tree_id, tree_height, tree_trunk_height, tree_crown_radius, tree_crown_shape,
+					      case_schema, tree_table,
+					      tree_height, tree_crown_radius);
 	if debug_level < 3 then
         raise notice 'sqltext: %', sqltext;
     end if;
 	-- loop over trees
-    for tid, th, tb, tr, ts, tc, tl, lad_red, geom_tc, tcx, tcy in execute sqltext loop
+    for tid, th, tb, tr, ts, tl, lad_red, geom_tc, tcx, tcy in execute sqltext loop
         --!!!
         if debug_level < 2 then
-            raise notice 'tid, th, tb, tr, ts, tc, tl, lad_redt, cx, tcy = %, %, %, %, %, %, %, %, %, %',
-                          tid, th, tb, tr, ts, tc, tl, lad_red, tcx, tcy;
+            raise notice 'tid, th, tb, tr, ts, tl, lad_redt, cx, tcy = %, %, %, %, %, %, %, %, %',
+                          tid, th, tb, tr, ts, tl, lad_red, tcx, tcy;
         end if;
 
         max_lad_ji = tl * lad_red;

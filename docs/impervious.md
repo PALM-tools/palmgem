@@ -1,0 +1,2 @@
+# Imperious surfaces
+A simple extension to an Urban Atlas + Open Street Map open source datasets. It a raster which defines a soil imperiousness. Based on the threshold value defined, the area that would be marked as a pavement are marked as a vegetation. 

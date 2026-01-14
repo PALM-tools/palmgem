@@ -353,7 +353,7 @@ def create_slurb_vars(ncfile, cfg, connection, cur):
                 gs.id as id,
                 a.height
             from "{0}"."{1}" gs
-                join lateral (select AVG(ST_NearestValue(rast, ST_SetSRID(ST_Point(gs.xcen,gs.ycen), %s))) AS height
+                join lateral (select AVG(ST_NearestValue(rast, gs.point)) AS height
                               FROM "{0}"."{2}"
                               WHERE ST_Intersects(rast, gs.geom)) a on true
         )
@@ -809,10 +809,13 @@ def write_pavements(ncfile, cfg, connection, cur):
         cur.execute(sqltext, (cfg.type_range.pavement_min,))
         sql_debug(connection)
     else:
-        sqltext = 'select l.type-%s from "{0}"."{1}" g ' \
-                  'left outer join "{0}"."{2}" l on l.lid = g.lid and l.type >= %s and l.type < %s ' \
-                  'order by g.j, g.i' \
-            .format(cfg.domain.case_schema, cfg.tables.grid, cfg.tables.landcover)
+        sqltext = """
+            select 
+                case when ic.id is not null then null else l.type-%s end 
+            from "{0}"."{1}" g
+                left outer join "{0}"."{2}" l on l.lid = g.lid and l.type >= %s and l.type < %s
+                left join impervious_correction ic on g.id = ic.id        
+            order by g.j, g.i""".format(cfg.domain.case_schema, cfg.tables.grid, cfg.tables.landcover)
         cur.execute(sqltext, (cfg.type_range.pavement_min, cfg.type_range.pavement_min, cfg.type_range.pavement_max,))
         sql_debug(connection)
     write_type_variable(ncfile, cfg, vn, 'pavement type', vt, cfg.fill_values, 0, connection, cur)
@@ -840,11 +843,11 @@ def write_pavements(ncfile, cfg, connection, cur):
             sqltext = 'SELECT case when l.type is not null then {0} else null end ' \
                       'from "{1}"."{2}" g    ' \
                       'left outer join "{1}"."{3}" l on l.lid = g.lid and l.type >= %s and l.type < %s ' \
-                      'left outer join "{1}"."{4}" p on p.code = l."{5}" ' \
+                      'left outer join "{1}"."{4}" p on p.code = l.catland ' \
                       'order by g.j, g.i' \
                 .format(cfg.pavement_pars[par], cfg.domain.case_schema, cfg.tables.grid,
                         cfg.tables.landcover,   cfg.tables.surface_params,
-                        cfg.landcover_params_var)
+                        )
             cur.execute(sqltext, (cfg.type_range.pavement_min, cfg.type_range.pavement_max,))
             res = cur.fetchall()
             sql_debug(connection)
@@ -894,10 +897,10 @@ def write_pavements(ncfile, cfg, connection, cur):
                 sqltext = 'SELECT case when l.type is not null then {0} else null end ' \
                           'from "{1}"."{2}" g    ' \
                           'left outer join "{1}"."{3}" l on l.lid = g.lid and l.type >= %s and l.type < %s ' \
-                          'left outer join "{1}"."{4}" p on p.code = l."{5}" ' \
+                          'left outer join "{1}"."{4}" p on p.code = l.catland ' \
                           'order by g.j, g.i' \
                     .format(cfg.pavement_subsurface_pars[par][k], cfg.domain.case_schema, cfg.tables.grid,
-                            cfg.tables.landcover, cfg.tables.surface_params, cfg.landcover_params_var)
+                            cfg.tables.landcover, cfg.tables.surface_params)
                 cur.execute(sqltext, (cfg.type_range.pavement_min, cfg.type_range.pavement_max,))
 
                 res = cur.fetchall()
@@ -992,10 +995,10 @@ def write_water(ncfile, cfg, connection, cur):
             sqltext = 'SELECT case when l.type is not null then {0} else null end ' \
                        'from "{1}"."{2}" g    ' \
                       'left outer join "{1}"."{3}" l on l.lid = g.lid and l.type >= %s and l.type < %s ' \
-                      'left outer join "{1}"."{4}" p on p.code = l."{5}" ' \
+                      'left outer join "{1}"."{4}" p on p.code = l.catland ' \
                       'order by g.j, g.i' \
                 .format(cfg.water_pars[par], cfg.domain.case_schema, cfg.tables.grid,
-                        cfg.tables.landcover, cfg.tables.surface_params, cfg.landcover_params_var)
+                        cfg.tables.landcover, cfg.tables.surface_params)
             cur.execute(sqltext, (cfg.type_range.water_min, cfg.type_range.water_max,))
             res = cur.fetchall()
             sql_debug(connection)
@@ -1029,9 +1032,14 @@ def write_vegetation(ncfile, cfg, connection, cur):
         cur.execute(sqltext, (cfg.type_range.vegetation_min, ))
         sql_debug(connection)
     else:
-        sqltext = 'select l.type-%s from "{0}"."{1}" g left outer join "{0}"."{2}" l ' \
-                  ' on l.lid = g.lid and l.type >= %s and l.type < %s order by g.j, g.i' \
-            .format(cfg.domain.case_schema, cfg.tables.grid, cfg.tables.landcover)
+        sqltext = """
+                select 
+                    case when ic.id is not null then ic.new_type else l.type-%s end 
+                from "{0}"."{1}" g 
+                    left outer join "{0}"."{2}" l on l.lid = g.lid and l.type >= %s and l.type < %s 
+                    left join impervious_correction ic on ic.id = g.id
+                order by g.j, g.i
+            """.format(cfg.domain.case_schema, cfg.tables.grid, cfg.tables.landcover)
         cur.execute(sqltext, (cfg.type_range.vegetation_min, cfg.type_range.vegetation_min, cfg.type_range.vegetation_max,))
         sql_debug(connection)
     write_type_variable(ncfile, cfg, vn, 'vegetation type', vt, cfg.fill_values, 0, connection, cur)
@@ -1059,11 +1067,11 @@ def write_vegetation(ncfile, cfg, connection, cur):
             # pavement_pars[par] - calculation formula for parameter
             sqltext = 'SELECT case when l.type is not null then {0} else null end from "{1}"."{2}" g    ' \
                       'left outer join "{1}"."{3}" l on l.lid = g.lid and l.type >= %s and l.type < %s ' \
-                      'left outer join "{1}"."{4}" p on p.code = l."{5}" ' \
+                      'left outer join "{1}"."{4}" p on p.code = l.catland ' \
                       'order by g.j, g.i' \
                 .format(cfg.vegetation_pars[par], cfg.domain.case_schema, cfg.tables.grid,
                         cfg.tables.landcover, cfg.tables.surface_params,
-                        cfg.landcover_params_var)
+                        )
             cur.execute(sqltext, (cfg.type_range.vegetation_min, cfg.type_range.vegetation_max,))
             res = cur.fetchall()
             sql_debug(connection)
@@ -1379,7 +1387,7 @@ def write_trees_grid(ncfile, cfg, connection, cur):
     """ Routine to generate trees """
     change_log_level(cfg.logs.level_trees)
     debug('get max height of the tree in the domain (relative height from ground)')
-    sqltext = 'select max(vysstr) from "{0}"."{1}"'.format(cfg.domain.case_schema, cfg.tables.trees)
+    sqltext = 'select max(treeh) from "{0}"."{1}"'.format(cfg.domain.case_schema, cfg.tables.trees)
     cur.execute(sqltext)
     ret = cur.fetchone()
     nzlad = ceil(ret[0] / cfg.domain.dz) + 1
@@ -1408,6 +1416,10 @@ def write_trees_grid(ncfile, cfg, connection, cur):
 
     ncfile.variables['lad'][1:, :, :] = lad
     ncfile.variables['bad'][1:, :, :] = bad
+
+    ncfile.variables['lad'][0, :, :] = 0
+    ncfile.variables['bad'][0, :, :] = 0
+
     if cfg.visual_check.enabled:
         for k in range(nzlad):
             variable_visualization(var=ncfile['lad'][k, ...],
@@ -1438,14 +1450,14 @@ def write_lad_grid(ncfile, cfg, connection, cur):
     prepared_lad_netcdf(ncfile, cfg, nzlad)
 
     ncfile.variables['lad'][0, :, :] = 0.0
-    ncfile.variables['lad'][0, :, :] = 0.0
+    ncfile.variables['bad'][0, :, :] = 0.0
 
     for nz in range(1, nzlad+1):
         verbose('nz: {}', nz)
         sqltext = """ 
         select 
             case when {5} between 0.0 and g.canopy_height and g.canopy_height > 0
-                    then least(1.6, lai / canopy_height) * greatest(0.0, least((canopy_height - {2}) / {4}, 1.0))
+                    then least(1.6, coalesce(lai / canopy_height, 0.0)) * greatest(0.0, least((canopy_height - {2}) / {4}, 1.0))
                 else 0.0 end
         from "{0}"."{1}" g
         order by g.j, g.i
@@ -1481,8 +1493,8 @@ def fetch_building_parameters(ncfile, cfg, vn, par, cfg_par, cur, connection, vt
             left outer join "{cfg.domain.case_schema}"."{cfg.tables.surface_params}" pr on pr.code = cast(r.material as integer)+%s
             left outer join "{cfg.domain.case_schema}"."{cfg.tables.building_walls}" bw on bw.id = g.id and not bw.isroof 
             left outer join "{cfg.domain.case_schema}"."{cfg.tables.walls}" w on w.gid = bw.wid 
-            left outer join "{cfg.domain.case_schema}"."{cfg.tables.surface_params}" pg on pg.code = w.stenakatd
-            left outer join "{cfg.domain.case_schema}"."{cfg.tables.surface_params}" pu on pu.code = w.stenakath 
+            left outer join "{cfg.domain.case_schema}"."{cfg.tables.surface_params}" pg on pg.code = w.wallcatd
+            left outer join "{cfg.domain.case_schema}"."{cfg.tables.surface_params}" pu on pu.code = w.wallcatu
         order by g.j,g.i;
     """
     extra_verbose('\t{}', sqltext)
@@ -1645,33 +1657,6 @@ def write_building_pars_depricated(ncfile, cfg, connection, cur):
         extra_verbose('\t{}', i_text)
 
         # calculation formula
-        # TODO: Move into one select, wall and roof are separated in parameters
-        """
-        select distinct on (g.i, g.j) g.j, g.i, b.id as b_id, bw.id as bw_id, 
-            g.id as g_id, w.gid as w_gid, r.gid as r_gid, pr.code as pr_code, pg.code as pg_code, pu.code as pu_code,
-            case when (bw.id is not null OR b.id IS NOT NULL) then 
-            --w.winfrach 
-            pr.capacity_surf
-            else null end  as pr_capacity_surf,
-            case when (bw.id is not null OR b.id IS NOT NULL) then 
-            --w.winfrach 
-            pu.capacity_surf
-            else null end as pu_capacity_surf,
-            case when (bw.id is not null OR b.id IS NOT NULL) then 
-            --w.winfrach 
-            w.emisivitah
-            else null end as w_emisivitah
-        from "evropska_martin_03_validation_summer"."grid" g 
-        left outer join "evropska_martin_03_validation_summer"."building_walls" bw on bw.id = g.id and not bw.isroof 
-        left outer join "evropska_martin_03_validation_summer"."buildings" b on b.id = g.id
-        left outer join "evropska_martin_03_validation_summer"."walls" w on w.gid = bw.wid 
-        left outer join "evropska_martin_03_validation_summer"."roofs" r on r.gid = b.rid 
-        left outer join "evropska_martin_03_validation_summer"."surface_params" pr on pr.code = r.material+200
-        left outer join "evropska_martin_03_validation_summer"."surface_params" pg on pg.code = w.stenakatd 
-        left outer join "evropska_martin_03_validation_summer"."surface_params" pu on pu.code = w.stenakath 
-        order by g.j,g.i
-        limit 100
-        """
         p_text = 'case when b.id is not null then {0} else null end'.format(i_text)
         sqltext = 'SELECT DISTINCT ON (g.i, g.j) ' \
                   '{0} from "{1}"."{2}" g ' \
@@ -1680,54 +1665,19 @@ def write_building_pars_depricated(ncfile, cfg, connection, cur):
                   'left outer join "{1}"."{7}" p on p.code = cast(r.material as integer)+%s ' \
                   'left outer join "{1}"."{5}" bw on bw.id = g.id and not bw.isroof ' \
                   'left outer join "{1}"."{6}" w on w.gid = bw.wid ' \
-                  'left outer join "{1}"."{7}" pg on pg.code = w.stenakatd ' \
-                  'left outer join "{1}"."{7}" pu on pu.code = w.stenakath ' \
+                  'left outer join "{1}"."{7}" pg on pg.code = w.wallcatd ' \
+                  'left outer join "{1}"."{7}" pu on pu.code = w.wallcatu ' \
                   'order by g.j,g.i ' \
             .format(p_text, cfg.domain.case_schema, cfg.tables.grid,
-                    cfg.tables.buildings_grid, cfg.tables.roofs, cfg.tables.building_walls, cfg.tables.walls, cfg.tables.surface_params, )
+                    cfg.tables.buildings_grid, cfg.tables.roofs, cfg.tables.building_walls,
+                    cfg.tables.walls, cfg.tables.surface_params,)
         extra_verbose('\t{}', sqltext)
         cur.execute(sqltext, (cfg.surf_range.roof_min,))
         res = cur.fetchall()
         sql_debug(connection)
         varr = np.reshape(np.asarray([x[0] for x in res], dtype=vt), (cfg.domain.ny, cfg.domain.nx))
         del res
-        # if par in cfg.building_pars_wall._settings.keys():
-        #     # process also parameter of walls
-        #     # create calculation formula
-        #     if cfg.insulation.enabled and par in cfg.insulation.building_pars and \
-        #        cfg.insulation.exists[cfg.insulation.pars_fields[cfg.insulation.building_pars.index(par)]]:
-        #         # parameter replacements for insulation layers of walls
-        #         i = cfg.insulation.building_pars.index(par)
-        #         i_text = 'case when "{0}" <> 0 then {1} else {2} end '.format(
-        #                  cfg.insulation.fields[cfg.insulation.pars_fields[i]],
-        #                  cfg.insulation.values[cfg.insulation.pars_items[i]], cfg.building_pars_wall[par])
-        #     else:
-        #         i_text = '{0} '.format(cfg.building_pars_wall[par])
-        #     # if par in cfg.building_pars_repl._settings.keys():
-        #     #     # parameter replacements for green frac
-        #     #     repl = cfg.building_pars_repl[par]
-        #     #     g_text = 'case '
-        #     #     for gf in repl:
-        #     #         g_text = g_text + 'when p.code = {0} then {1} '.format(gf[0], gf[1])
-        #     #     i_text = g_text + 'else {0} end '.format(i_text)
-        #
-        #     p_text = 'case when bw.id is not null then {0} else null end '.format(i_text)
-        #     sqltext = 'select distinct on (g.i, g.j) ' \
-        #               '{0} from "{1}"."{2}" g ' \
-        #               'left outer join "{1}"."{3}" bw on bw.id = g.id and not bw.isroof ' \
-        #               'left outer join "{1}"."{4}" w on w.gid = bw.wid ' \
-        #               'left outer join "{1}"."{5}" pg on pg.code = w.stenakatd ' \
-        #               'left outer join "{1}"."{5}" pu on pu.code = w.stenakath ' \
-        #               'order by g.j,g.i ' \
-        #         .format(p_text, cfg.domain.case_schema, cfg.tables.grid, cfg.tables.building_walls,
-        #                 cfg.tables.walls, cfg.tables.surface_params, )
-        #     cur.execute(sqltext)
-        #     res = cur.fetchall()
-        #     sql_debug(connection)
-        #     varw = np.reshape(np.asarray([x[0] for x in res], dtype=vt), (cfg.domain.ny, cfg.domain.nx))
-        #     del res
-        #     # combine the arrays
-        #     varr = np.where(np.isnan(varw), varr, varw)
+
         # replace nan with fillValue and save in netcdf file
         var = np.nan_to_num(varr, copy=False, nan=cfg.fill_values[vt], posinf=cfg.fill_values[vt], neginf=cfg.fill_values[vt])
         ncfile.variables[vn][par,...] = var
@@ -1838,9 +1788,9 @@ def write_building_surface_pars(ncfile, cfg, connection, cur, vtabs):
                 p = [p, p, p, p, p]
             pt = ['pr', 'pg', 'pu', 'pd', 'b'] # pr ... roof, pg ... ground, pu ... upper floors, pd ... downward facing, b .. bridges
             sqlline1 = 'LEFT OUTER JOIN "{0}"."{1}" d on s.eid = d.gid '.format(cfg.domain.case_schema, cfg.tables.extras_shp)
-            sqlline2 = 'LEFT OUTER JOIN "{0}"."{1}" pd on pd.code = d.katlandd '.format(cfg.domain.case_schema, cfg.tables.surface_params)
+            sqlline2 = 'LEFT OUTER JOIN "{0}"."{1}" pd on pd.code = d.katlandd '.format(cfg.domain.case_schema, cfg.tables.surface_params, )
             sqlline3 = 'LEFT OUTER JOIN "{0}"."{1}" AS be ON s.eid = be.gid '.format(cfg.domain.case_schema, cfg.tables.extras_shp)
-            sqlline4 = 'LEFT OUTER JOIN "{0}"."{1}" AS b ON b.code = be.katlandu '.format(cfg.domain.case_schema, cfg.tables.surface_params)
+            sqlline4 = 'LEFT OUTER JOIN "{0}"."{1}" AS b ON b.code = be.katlandd '.format(cfg.domain.case_schema, cfg.tables.surface_params, )
         else:
             p = cfg.building_surface_pars[par]
             if not isinstance(p, list):
@@ -1889,8 +1839,8 @@ def write_building_surface_pars(ncfile, cfg, connection, cur, vtabs):
                   'left outer join "{1}"."{5}" w on w.gid = s.wid  ' \
                   '{8} ' \
                   '{9} ' \
-                  'left outer join "{1}"."{4}" pg on pg.code = w.stenakatd ' \
-                  'left outer join "{1}"."{4}" pu on pu.code = w.stenakath ' \
+                  'left outer join "{1}"."{4}" pg on pg.code = w.wallcatd ' \
+                  'left outer join "{1}"."{4}" pu on pu.code = w.wallcatu ' \
                   '{10} ' \
                   '{11} ' \
                   'left outer join "{1}"."{6}" g on g.id = s.gid ' \
@@ -1898,7 +1848,8 @@ def write_building_surface_pars(ncfile, cfg, connection, cur, vtabs):
                   '     AS wart ON wart.id = g.id AND wart.direction = s.direction ' \
                   'order by g.j ASC, g.i ASC, s.direction ASC, s.zs DESC' \
             .format(p_text, cfg.domain.case_schema, cfg.tables.surfaces, cfg.tables.roofs, cfg.tables.surface_params,
-                    cfg.tables.walls, cfg.tables.grid, cfg.surf_range.roof_min, sqlline1, sqlline3, sqlline2, sqlline4, cfg.tables.building_walls)
+                    cfg.tables.walls, cfg.tables.grid, cfg.surf_range.roof_min, sqlline1, sqlline3, sqlline2, sqlline4, cfg.tables.building_walls,
+                    )
         extra_verbose('\t{}', sqltext)
         cur.execute(sqltext)
         res = cur.fetchall()
@@ -1973,10 +1924,11 @@ def write_albedo_pars(ncfile,cfg, connection, cur):
                   'from "{1}"."{2}" g ' \
                   'left outer join "{1}"."{3}" bw on bw.id = g.id and not bw.isroof ' \
                   'left outer join "{1}"."{4}" w on w.gid = bw.wid ' \
-                  'left outer join "{1}"."{5}" pw on pw.code = w.stenakath ' \
+                  'left outer join "{1}"."{5}" pw on pw.code = w.wallcatu ' \
                   'order by g.j,g.i ' \
             .format(cfg.albedo_pars[par][2], cfg.domain.case_schema, cfg.tables.grid, cfg.tables.building_walls,
-                    cfg.tables.walls, cfg.tables.surface_params, )
+                    cfg.tables.walls, cfg.tables.surface_params,
+                    )
         cur.execute(sqltext)
         res = cur.fetchall()
         sql_debug(connection)
@@ -1986,6 +1938,80 @@ def write_albedo_pars(ncfile,cfg, connection, cur):
         varr = np.where(np.isnan(varw), varr, varw)
         # replace nan with fillValue and save in netcdf file
         var[par, :, :] = np.nan_to_num(varr, copy=False, nan=cfg.fill_values[vt], posinf=cfg.fill_values[vt], neginf=cfg.fill_values[vt])
+        debug('Variable {}, parameter {} written.', vn, par)
+        if cfg.visual_check.enabled:
+            variable_visualization(var=var[par, ...],
+                                   x=np.asarray(ncfile.variables['x']), y=np.asarray(ncfile.variables['y']),
+                                   var_name=vn, par_id=par, text_id='albedo_type', path=cfg.visual_check.path,
+                                   show_plots = cfg.visual_check.show_plots)
+    debug('Variable {} completely written.', vn)
+
+def write_albedo_pars_config(ncfile, cfg, connection, cur, ):
+    """ Write albedo pars from configuration. """
+    debug('Processing albedo pars from config')
+    vn = 'albedo_pars'
+    vt = 'f4'
+    var = ncfile.createVariable(vn, vt, ('nalbedo_pars', 'y', 'x'), fill_value=cfg.fill_values[vt])
+    nc_write_attribute(ncfile, vn, 'long_name', 'building parameters')
+    nc_write_attribute(ncfile, vn, 'units', '')
+    nc_write_attribute(ncfile, vn, 'res_orig', cfg.domain.dz)
+    nc_write_attribute(ncfile, vn, 'coordinates', 'E_UTM N_UTM lon lat')
+    nc_write_attribute(ncfile, vn, 'grid_mapping', 'E_UTM N_UTM lon lat')
+
+    # 0:  # Broadband albedo (wall fraction in case of building) at (y,x).
+    # 1:  # Only for buildings. Longwave albedo of wall fraction at (y,x).
+    # 2:  # Only for buildings. Shortwave albedo of wall fraction at (y,x).
+    # 3:  # Only for buildings. Longwave albedo of green fraction at (y,x).
+    # 4:  # Only for buildings. Shortwave albedo of green fraction at (y,x).
+    # 5:  # Only for buildings. Longwave albedo of window fraction at (y,x).
+    # 6:  # Only for buildings. Shortwave albedo of window fraction at (y,x).
+
+    # Process 0 - combine landcover and walls
+    pars = [
+        [0, 'broadband', 'wall'],
+        [1, 'longwave',  'wall'],
+        [2, 'shortwave', 'roof'],
+        [3, 'longwave', 'win_wall'],
+        [4, 'shortwave', 'win_roof'],
+        [5, 'longwave', 'green_wall'],
+        [6, 'shortwave', 'green_roof']
+    ]
+
+    for par, rad_type, build_case in pars:
+        debug(f"processing albedo pars from config {par}, {rad_type}, {build_case}")
+        sqlquery = 'case '
+        for veg_type in cfg.vegetation_type_albedos._settings.keys():
+            type, value = veg_type + cfg.type_range.vegetation_min, cfg.vegetation_type_albedos[veg_type][rad_type]
+            sqlquery += f'when l.type = {type} then {value}'
+
+        for pav_type in cfg.pavement_type_albedos._settings.keys():
+            type, value = pav_type + cfg.type_range.pavement_min, cfg.pavement_type_albedos[pav_type][rad_type]
+            sqlquery += f'when l.type = {type} then {value}'
+
+        for wat_type in cfg.water_type_albedos._settings.keys():
+            type, value = wat_type + cfg.type_range.water_min, cfg.water_type_albedos[wat_type][rad_type]
+            sqlquery += f'when l.type = {type} then {value}'
+
+        for build_type in cfg.building_type_albedos._settings.keys():
+            type, value = build_type + cfg.type_range.building_min, cfg.building_type_albedos[build_type][build_case][rad_type]
+            sqlquery += f'when l.type = {type} then {value}'
+
+        sqlquery += 'else 0 end'
+
+        sqltext = f"""
+            select 
+                distinct on (g.i, g.j) 
+                {sqlquery}
+            from "{cfg.domain.case_schema}"."{cfg.tables.grid}" g
+                join "{cfg.domain.case_schema}"."{cfg.tables.landcover}" l on l.lid = g.lid
+            order by g.j, g.i;
+        """
+        cur.execute(sqltext)
+        res = cur.fetchall()
+        sql_debug(connection)
+        varr = np.reshape(np.asarray([x[0] for x in res], dtype=vt), (cfg.domain.ny, cfg.domain.nx))
+        var[par, :, :] = np.nan_to_num(varr, copy=False, nan=cfg.fill_values[vt], posinf=cfg.fill_values[vt],
+                                       neginf=cfg.fill_values[vt])
         debug('Variable {}, parameter {} written.', vn, par)
         if cfg.visual_check.enabled:
             variable_visualization(var=var[par, ...],
