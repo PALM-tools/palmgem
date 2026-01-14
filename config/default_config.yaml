@@ -83,6 +83,30 @@ tables:
     grid_slurb:             'grid_slurb'
     lai:                    'lai'
     canopy_height:          'canopy_height'
+    impervious:             'impervious'
+    
+columns:
+    catland: ['katland']
+    catlandd: ['katlandd']
+    catlandu: ['katlandu']
+    emissivity: ['emisivita', 'emiss']
+    wallcatd: ['stenakatd', 'wallcat0']
+    wallcatu: ['stenakath', 'wallcat1']
+    thickness: ['tloustka', 'thick']
+    albedod: ['albedo0']
+    albedou: ['albedoh', 'albedo1']
+    wallfracd: ['wallfrac0']
+    wallfracu: ['wallfrach', 'wallfrac1']
+    winfracd: ['winfrac0']
+    winfracu: ['winfrach', 'winfrac1']
+    treeh: ['vysstr']
+    trunkh: ['vyskmen']
+    trunkr: ['polokmen']
+    crownr: ['polokor']
+    crownshp: ['tvarkor']
+    tree_type: ['typstr', 'treetype']
+    
+    
     
 idx:
     landcover: 'lid'
@@ -119,6 +143,11 @@ slanted_pars:
     roofs_dist2edge: 2.0
     dist2edge_filter: 0.6
     wall_build_height_max_dist: 2.0
+    edge_segment_length: 1.0
+    edge_angle_min: 105.0
+    edge_angle_max: 245.0
+    edge_2_edge_distance: 1.7
+    
     
 fill_missing_holes: True
 
@@ -143,7 +172,7 @@ flat_terrain:
 force_lsm_only: False
 force_cyclic: False
 force_cyclic_nc: 4
-force_building_boundary: False
+force_building_boundary: True
 force_building_boundary_dist: 3 # distance in grid points, real distance =* dx
 crop_small_buildings: False  # In case of slanted faces
 small_buildings_area: 20 # Area in grid points
@@ -159,6 +188,8 @@ trees:
     
 canopy:
     using_lai: False
+    lai_mod: 1.0
+    canopy_height_mod: 1.0
     
 walls:
     # wall directions (North, East, South, West) direction = [1, 2, 3, 4]
@@ -239,8 +270,6 @@ ndims:
     building_indoor_par: 19        # number of elements in building indoor pars
     building_surface_level: 3      # number of elements inbuilding lai
     
-    
-landcover_params_var: 'katland'
 
 multipolygon: True
 
@@ -341,18 +370,18 @@ pavement_subsurface_pars:
 # calculation formulas for particular parameters of albedo_pars(nalbedo_pars,y,x)
 # [landcover, building roof, building wall (above groud floor level)]
 albedo_pars:
-    0: ['l.albedo',      'r.albedo',      'w.albedoh']                # Broadband albedo (wall fraction in case of building) at (y,x).
-    1: ['1-l.emisivita', '1-r.emisivita', '1-pw.emissivity']          # Only for buildings. Longwave albedo of wall fraction at (y,x).
-    2: ['l.albedo',      'r.albedo',      'w.albedoh']                # Only for buildings. Shortwave albedo of wall fraction at (y,x).
-    3: ['1-l.emisivita', '1-r.emisivita', '1-pw.emissivity']          # Only for buildings. Longwave albedo of green fraction at (y,x). (no info for green fraction on roofs so far)
-    4: ['l.albedo',      'r.albedo',      'w.albedoh']                # Only for buildings. Shortwave albedo of green fraction at (y,x). (no info for green fraction on roofs so far)
-    5: ['1-l.emisivita', '1-r.emisivita', '1-pw.emissivity']          # Only for buildings. Longwave albedo of window fraction at (y,x). (no info for window fraction on roofs so far)
-    6: ['l.albedo',      'r.albedo',      'w.albedoh']                # Only for buildings. Shortwave albedo of window fraction at (y,x). (no info for window fraction on roofs so far)
+    0: ['l.albedo',      'r.albedo',      'w.albedou']                # Broadband albedo (wall fraction in case of building) at (y,x).
+    1: ['1-l.emissivity', '1-r.emissivity', '1-pw.emissivity']          # Only for buildings. Longwave albedo of wall fraction at (y,x).
+    2: ['l.albedo',      'r.albedo',      'w.albedou']                # Only for buildings. Shortwave albedo of wall fraction at (y,x).
+    3: ['1-l.emissivity', '1-r.emissivity', '1-pw.emissivity']          # Only for buildings. Longwave albedo of green fraction at (y,x). (no info for green fraction on roofs so far)
+    4: ['l.albedo',      'r.albedo',      'w.albedou']                # Only for buildings. Shortwave albedo of green fraction at (y,x). (no info for green fraction on roofs so far)
+    5: ['1-l.emissivity', '1-r.emissivity', '1-pw.emissivity']          # Only for buildings. Longwave albedo of window fraction at (y,x). (no info for window fraction on roofs so far)
+    6: ['l.albedo',      'r.albedo',      'w.albedou']                # Only for buildings. Shortwave albedo of window fraction at (y,x). (no info for window fraction on roofs so far)
 
 # pr ... roof, pg ... ground floor, pu ... upper, pd ... downward facing, b ... bridge
 building_pars:
-    0:  'w.wallfrach'           # Wall fraction above the ground floor level (0-1)
-    1:  'w.winfrach'            # Window fraction above the ground floor level (0-1)
+    0:  'w.wallfracu'           # Wall fraction above the ground floor level (0-1)
+    1:  'w.winfracu'            # Window fraction above the ground floor level (0-1)
     2:  '0'                     # Green fraction on wall above the ground floor level (0-1)
     3:  '0'                     # Green fraction on roof (0-1)
         # NOTE set 0.9 for roof type 4 (lawn) and 0.5 for roof type 5 (ornamental garden) (set according building_pars_repl)
@@ -367,9 +396,9 @@ building_pars:
     11: 'pu.conductivity_volume'# Thermal conductivity of wall layer 3 above the ground floor level (W/m/K)
     12: *indoor_temp           # Indoor target summer temperature (K)
     13: *outdoor_temp          # Indoor target winter temperature (K)
-    14: 'pu.emissivity' #'w.emisivitah'          # Emissivity of wall fraction above the ground floor level (0-1)
-    15: 'pu.emissivity' #'w.emisivitah'           # Emissivity of green fraction above the ground floor level (0-1)
-    16: 'pu.emissivity' #'w.emisivitah'          # Emissivity of window fraction above the ground floor level (0-1)
+    14: 'pu.emissivity'        # Emissivity of wall fraction above the ground floor level (0-1)
+    15: 'pu.emissivity'        # Emissivity of green fraction above the ground floor level (0-1)
+    16: 'pu.emissivity'        # Emissivity of window fraction above the ground floor level (0-1)
     17: *wintrans              # Transmissivity of window fraction above the ground floor level (0-1)
     18: 'pu.roughness'           # Roughness length for momentum above the ground floor level (m)
     19: 'pu.roughness_h'        # Roughness length for heat above the ground floor level (m)
@@ -385,9 +414,9 @@ building_pars:
     29: 'pg.conductivity_surf'  # Ground floor thermal conductivity of wall layer 1 (W/m/K)
     30: 'pg.conductivity_surf'   # Ground floor thermal conductivity of wall layer 2 (W/m/K)
     31: 'pg.conductivity_volume' # Ground floor thermal conductivity of wall layer 3 (W/m/K)
-    32: 'pg.emissivity' #'w.emisivitad'          # Ground floor emissivity of wall fraction (0-1)
-    33: 'pg.emissivity' #'w.emisivitad'           # Ground floor emissivity of green fraction (0-1)
-    34: 'pg.emissivity' #'w.emisivitad'          # Ground floor emissivity of window fraction (0-1)
+    32: 'pg.emissivity'          # Ground floor emissivity of wall fraction (0-1)
+    33: 'pg.emissivity'          # Ground floor emissivity of green fraction (0-1)
+    34: 'pg.emissivity'          # Ground floor emissivity of window fraction (0-1)
     35: *wintrans            # Ground floor transmissivity of window fraction (0-1)
     36: 'pg.roughness'           # Ground floor roughness length for momentum (m)
     37: 'pg.roughness_h'          # Ground floor roughness length for heat (m)
@@ -443,17 +472,17 @@ building_pars:
     87: 'pu.conductivity_surf' # Thermal conductivity of standard floor wall layer 2 (W/m/K)
     88: 'pu.conductivity_volume' # Thermal conductivity of standard floor wall layer 3 (W/m/K)
     89: '1.0' # Wall fraction of roof (1)
-    90: !join [r.tloustka*0.01*, *zwall_norm1] # Thickness of roof layer 1 (m)
-    91: !join [r.tloustka*0.01*, *zwall_norm2] # Thickness of roof layer 2 (m)
-    92: !join [r.tloustka*0.01*, *zwall_norm3] # Thickness of roof layer 3 (m)
-    93: !join [r.tloustka*0.01*, *zwall_norm4] # Thickness of roof layer 4 (m)
+    90: !join [r.thickness*0.01*, *zwall_norm1] # Thickness of roof layer 1 (m)
+    91: !join [r.thickness*0.01*, *zwall_norm2] # Thickness of roof layer 2 (m)
+    92: !join [r.thickness*0.01*, *zwall_norm3] # Thickness of roof layer 3 (m)
+    93: !join [r.thickness*0.01*, *zwall_norm4] # Thickness of roof layer 4 (m)
     94: 'p.capacity_surf' # Heat capacity of roof layers 1 (J/m²/K)
     95: 'p.capacity_surf' # Heat capacity of roof layer 2 (J/m²/K)
     96: 'p.capacity_volume' # Heat capacity of roof layer 3 (J/m²/K)
     97: 'p.conductivity_surf' # Thermal conductivity of roof layers 1 (W/m/K)
     98: 'p.conductivity_surf' # Thermal conductivity of roof layer 2 (W/m/K)
     99: 'p.conductivity_volume' # Thermal conductivity of roof layer 3 (W/m/K)
-    100: 'r.emisivita' # Emissivity of roof (1)
+    100: 'r.emissivity' # Emissivity of roof (1)
     101: '0' # Albedo of roof (1) albedo_type = 0 albedo will be supplied by albedo_props
     102: '0' # Window fraction of roof (1)
     # 103: # Thickness of roof window layer 1 (m)
@@ -520,20 +549,20 @@ building_albedo_type: #(building_surface_type,y,x)
 building_emissivity: #(building_surface_type,y,x)
     0: 'pg.emissivity'  # wall emissivity gfl
     1: 'pu.emissivity'  # wall emissivity agfl
-    2: 'r.emisivita'    # wall emissivity roof
+    2: 'r.emissivity'    # wall emissivity roof
     3: 'pg.emissivity'  # window emissivity gfl
     4: 'pu.emissivity'  # window emissivity agfl
-    5: 'r.emisivita'    # window emissivity roof
+    5: 'r.emissivity'    # window emissivity roof
     6: 'pg.emissivity'  # green emissivity gfl
     7: 'pu.emissivity'  # green emissivity agfl
-    8: 'r.emisivita'    # green emissivity roof
+    8: 'r.emissivity'    # green emissivity roof
 
 building_fraction: #(building_surface_type,y,x)
     0: 'w.wallfracd'   # wall fraction gfl
-    1: 'w.wallfrach'   # wall fraction agfl
+    1: 'w.wallfracu'   # wall fraction agfl
     2: '1.0'           # wall fraction roof
     3: 'w.winfracd'    # window fraction gfl
-    4: 'w.winfrach'    # window fraction agfl
+    4: 'w.winfracu'    # window fraction agfl
     5: '0'             # window fraction roof
     6: '0'             # green fraction gfl
     7: '0'             # green fraction agfl
@@ -611,10 +640,10 @@ building_thickness: #(building_surface_type,building_surface_layer,y,x)
         !join [ pr.thicknes*, *zwall_norm2 ],
         !join [ pr.thicknes*, *zwall_norm3 ],
         !join [ pr.thicknes*, *zwall_norm4 ]]    # wall layer thicknesses agfl
-    2: [!join [r.tloustka*0.01*, *zwall_norm1],
-        !join [r.tloustka*0.01*, *zwall_norm2],
-        !join [r.tloustka*0.01*, *zwall_norm3],
-        !join [r.tloustka*0.01*, *zwall_norm4]]   # wall layer thicknesses roof
+    2: [!join [r.thickness*0.01*, *zwall_norm1],
+        !join [r.thickness*0.01*, *zwall_norm2],
+        !join [r.thickness*0.01*, *zwall_norm3],
+        !join [r.thickness*0.01*, *zwall_norm4]]   # wall layer thicknesses roof
 #    3: ''   # window layer thicknesses gfl
 #    4: ''   # window layer thicknesses agfl
 #    5: ''   # window layer thicknesses roof
@@ -630,8 +659,8 @@ building_transmissivity: #(building_surface_level,y,x)
 buildings_pars_depricated: False
 
 building_surface_pars:
-    0: ['1', 'w.wallfracd', 'w.wallfrach', '1', '1']  # wall fraction (0-1) (set according building_pars_repl)
-    1: ['0', 'w.winfracd', 'w.winfrach', '0', '0']  # window fraction (0-1) # no data for window fraction on roofs, set to zero TODO: not used so far
+    0: ['1', 'w.wallfracd', 'w.wallfracu', '1', '1']  # wall fraction (0-1) (set according building_pars_repl)
+    1: ['0', 'w.winfracd', 'w.winfracu', '0', '0']  # window fraction (0-1) # no data for window fraction on roofs, set to zero TODO: not used so far
     2: '0'  # green fraction on wall (0-1) not in use set to zero so far TODO
     3: '0'  # green fraction on roof (0-1) set 0.9 for roof type 4 (lawn) and 0.5 for roof type 5 (ornamental garden) (set according building_pars_repl)
     4: '0'  # leaf area index of green fraction (roof) set 1.4 for roof type 4 (lawn) and 0.4 for roof type 5 (ornamental garden) (set according building_pars_repl)
@@ -643,21 +672,21 @@ building_surface_pars:
     10: ['pr.conductivity_volume', 'pg.conductivity_volume', 'pu.conductivity_volume', 'pd.conductivity_volume', 'b.conductivity_volume']  # thermal conductivity of wall layer 3
     11: *indoor_temp  # indoor target summer temperature (K)
     12: *outdoor_temp  # indoor target winter temperature (K)
-    13: ['r.emisivita', 'pg.emissivity', 'pu.emissivity', 'pd.emissivity', 'b.emissivity']  #['r.emisivita', 'w.emisivitad', 'w.emisivitah', 'pd.emissivity']  # emissivity of wall fraction (0-1)
-    14: ['r.emisivita', 'pg.emissivity', 'pu.emissivity', 'pd.emissivity', 'b.emissivity']  #['r.emisivita', 'w.emisivitad', 'w.emisivitah', 'pd.emissivity']  # emissivity of green fraction (0-1) TODO separate emissivity for green fraction
-    15: ['r.emisivita', 'pg.emissivity', 'pu.emissivity', 'pd.emissivity', 'b.emissivity']  #['r.emisivita', 'w.emisivitad', 'w.emisivitah', 'pd.emissivity']  # emissivity of window fraction (0-1) TODO separate emissivity for window fraction
-    16: *wintrans  # transmissivity of window fraction (0-1) TODO temporary transmissivity of window set to fixed parameter wintrans
+    13: ['r.emissivity', 'pg.emissivity', 'pu.emissivity', 'pd.emissivity', 'b.emissivity']    # emissivity of wall fraction (0-1)
+    14: ['r.emissivity', 'pg.emissivity', 'pu.emissivity', 'pd.emissivity', 'b.emissivity']   # emissivity of green fraction (0-1)
+    15: ['r.emissivity', 'pg.emissivity', 'pu.emissivity', 'pd.emissivity', 'b.emissivity']  # emissivity of window fraction (0-1)
+    16: *wintrans  # transmissivity of window fraction (0-1
     17: ['pr.roughness',   'pg.roughness',    'pu.roughness',     'pd.roughness',    'b.roughness']  # roughness length for momentum (m) ['0.021', '0.022', '0.023'] #
     18: ['pr.roughness_h', 'pg.roughness_h',  'pu.roughness_h',   'pd.roughness_h',  'b.roughness_h']  # roughness length for heat (m)
-    19: ['r.albedo',       'w.albedod',        'w.albedoh',       'pd.emissivity',   'b.emissivity']  # Broadband albedo of wall fraction
-    20: ['1-r.emisivita',  '1-pg.emissivity',  '1-pu.emissivity', '1-pd.emissivity', '1-b.emissivity']  #['1-r.emisivita', '1-w.emisivitad', '1-w.emisivitah', '1-pd.emissivity']  # Longwave albedo of wall fraction
-    21: ['r.albedo',       'w.albedod',        'w.albedoh',       'pd.albedo',       'b.albedo']  # Shortwave albedo of wall fraction
-    22: ['r.albedo',       'w.albedod',        'w.albedoh',       'pd.albedo',       'b.albedo']  # Broadband albedo of window fraction
-    23: ['1-r.emisivita',  '1-pg.emissivity',  '1-pu.emissivity', '1-pd.emissivity', '1-b.emissivity']  #['1-r.emisivita', '1-w.emisivitad', '1-w.emisivitah', '1-pd.emissivity']  # Longwave albedo of window fraction
-    24: ['r.albedo',       'w.albedod',        'w.albedoh',       'pd.albedo',       'b.albedo']  # Shortwave albedo of window fraction
-    25: ['r.albedo',       'w.albedod',        'w.albedoh',       'pd.albedo',       'b.albedo']  # Broadband albedo of green fraction
-    26: ['1-r.emisivita',  '1-pg.emissivity',  '1-pu.emissivity', '1-pd.emissivity', '1-b.emissivity']  #['1-r.emisivita', '1-w.emisivitad', '1-w.emisivitah', '1-pd.emissivity']  # Longwave albedo of green fraction
-    27: ['r.albedo',       'w.albedod',        'w.albedoh',       'pd.albedo',       'b.albedo']  # Shortwave albedo of green fraction
+    19: ['r.albedo',       'w.albedod',        'w.albedou',       'pd.emissivity',   'b.emissivity']  # Broadband albedo of wall fraction
+    20: ['1-r.emissivity',  '1-pg.emissivity',  '1-pu.emissivity', '1-pd.emissivity', '1-b.emissivity']   # Longwave albedo of wall fraction
+    21: ['r.albedo',       'w.albedod',        'w.albedou',       'pd.albedo',       'b.albedo']  # Shortwave albedo of wall fraction
+    22: ['r.albedo',       'w.albedod',        'w.albedou',       'pd.albedo',       'b.albedo']  # Broadband albedo of window fraction
+    23: ['1-r.emissivity',  '1-pg.emissivity',  '1-pu.emissivity', '1-pd.emissivity', '1-b.emissivity']  # Longwave albedo of window fraction
+    24: ['r.albedo',       'w.albedod',        'w.albedou',       'pd.albedo',       'b.albedo']  # Shortwave albedo of window fraction
+    25: ['r.albedo',       'w.albedod',        'w.albedou',       'pd.albedo',       'b.albedo']  # Broadband albedo of green fraction
+    26: ['1-r.emissivity',  '1-pg.emissivity',  '1-pu.emissivity', '1-pd.emissivity', '1-b.emissivity']   # Longwave albedo of green fraction
+    27: ['r.albedo',       'w.albedod',        'w.albedou',       'pd.albedo',       'b.albedo']  # Shortwave albedo of green fraction
     
 soil_moisture_adjust:
     35: 1.0  # 2.0
@@ -668,3 +697,341 @@ building_pars_repl:
 
 building_surface_pars_repl:
     99999: [ [ 99999, 0.5 ], [ 99999, 0.5 ] ]
+    
+    
+# albedo parameters striped from PALM
+prepare_albedo_type: False   # A option to prepare albedo pars from those parameters
+vegetation_type_albedos:
+    1:
+        broadband: 0.08
+        shortwave: 0.08
+        longwave: 0.08
+    2:
+        broadband: 0.19
+        shortwave: 0.09
+        longwave: 0.28
+    3:
+        broadband: 0.25
+        shortwave: 0.14
+        longwave: 0.34
+    4:
+        broadband: 0.14
+        shortwave: 0.06
+        longwave: 0.22
+    5:
+        broadband: 0.19
+        shortwave: 0.06
+        longwave: 0.31
+    6:
+        broadband: 0.14
+        shortwave: 0.06
+        longwave: 0.22
+    7:
+        broadband: 0.17
+        shortwave: 0.06
+        longwave: 0.27
+    8:
+        broadband: 0.18
+        shortwave: 0.06
+        longwave: 0.28
+    9:
+        broadband: 0.43
+        shortwave: 0.35
+        longwave: 0.51
+    10:
+        broadband: 0.19
+        shortwave: 0.1
+        longwave: 0.27
+    11:
+        broadband: 0.19
+        shortwave: 0.09
+        longwave: 0.28
+    12:
+        broadband: 0.43
+        shortwave: 0.35
+        longwave: 0.51
+    13:
+        broadband: 0.77
+        shortwave: 0.9
+        longwave: 0.65
+    14:
+        broadband: 0.23
+        shortwave: 0.11
+        longwave: 0.33
+    15:
+        broadband: 0.23
+        shortwave: 0.11
+        longwave: 0.33
+    16:
+        broadband: 0.25
+        shortwave: 0.14
+        longwave: 0.34
+    17:
+        broadband: 0.18
+        shortwave: 0.06
+        longwave: 0.28
+    18:
+        broadband: 0.17
+        shortwave: 0.06
+        longwave: 0.27
+        
+pavement_type_albedos:
+    1:
+        broadband: 0.17
+        shortwave: 0.17
+        longwave: 0.17
+    2:
+        broadband: 0.17
+        shortwave: 0.17
+        longwave: 0.17
+    3:
+        broadband: 0.3
+        shortwave: 0.3
+        longwave: 0.3
+    4:
+        broadband: 0.17
+        shortwave: 0.17
+        longwave: 0.17
+    5:
+        broadband: 0.17
+        shortwave: 0.17
+        longwave: 0.17
+    6:
+        broadband: 0.17
+        shortwave: 0.17
+        longwave: 0.17
+    7:
+        broadband: 0.17
+        shortwave: 0.17
+        longwave: 0.17
+    8:
+        broadband: 0.17
+        shortwave: 0.17
+        longwave: 0.17
+    9:
+        broadband: 0.17
+        shortwave: 0.17
+        longwave: 0.17
+    10:
+        broadband: 0.17
+        shortwave: 0.17
+        longwave: 0.17
+    11:
+        broadband: 0.17
+        shortwave: 0.17
+        longwave: 0.17
+    12:
+        broadband: 0.17
+        shortwave: 0.17
+        longwave: 0.17
+    13:
+        broadband: 0.17
+        shortwave: 0.17
+        longwave: 0.17
+    14:
+        broadband: 0.17
+        shortwave: 0.17
+        longwave: 0.17
+    15:
+        broadband: 0.17
+        shortwave: 0.17
+        longwave: 0.17
+        
+water_type_albedos:
+    1:
+        broadband: 0.06
+        shortwave: 0.06
+        longwave: 0.06
+    2:
+        broadband: 0.06
+        shortwave: 0.06
+        longwave: 0.06
+    3:
+        broadband: 0.06
+        shortwave: 0.06
+        longwave: 0.06
+    4:
+        broadband: 0.06
+        shortwave: 0.06
+        longwave: 0.06
+    5:
+        broadband: 0.06
+        shortwave: 0.06
+        longwave: 0.06
+        
+building_type_albedos:
+    1:
+        wall:
+            broadband: 0.07
+            shortwave: 0.07
+            longwave: 0.07
+        roof:
+            broadband: 0.07
+            shortwave: 0.07
+            longwave: 0.07
+        win_wall:
+            broadband: 0.12
+            shortwave: 0.12
+            longwave: 0.12
+        win_roof:
+            broadband: 0.12
+            shortwave: 0.12
+            longwave: 0.12
+        green_wall:
+            broadband: 0.25
+            shortwave: 0.14
+            longwave: 0.34
+        green_roof:
+            broadband: 0.25
+            shortwave: 0.14
+            longwave: 0.34
+    2:
+        wall:
+            broadband: 0.07
+            shortwave: 0.07
+            longwave: 0.07
+        roof:
+            broadband: 0.07
+            shortwave: 0.07
+            longwave: 0.07
+        win_wall:
+            broadband: 0.12
+            shortwave: 0.12
+            longwave: 0.12
+        win_roof:
+            broadband: 0.12
+            shortwave: 0.12
+            longwave: 0.12
+        green_wall:
+            broadband: 0.25
+            shortwave: 0.14
+            longwave: 0.34
+        green_roof:
+            broadband: 0.25
+            shortwave: 0.14
+            longwave: 0.34
+    3:
+        wall:
+            broadband: 0.07
+            shortwave: 0.07
+            longwave: 0.07
+        roof:
+            broadband: 0.07
+            shortwave: 0.07
+            longwave: 0.07
+        win_wall:
+            broadband: 0.17
+            shortwave: 0.18
+            longwave: 0.18
+        win_roof:
+            broadband: 0.17
+            shortwave: 0.18
+            longwave: 0.18
+        green_wall:
+            broadband: 0.25
+            shortwave: 0.14
+            longwave: 0.34
+        green_roof:
+            broadband: 0.25
+            shortwave: 0.14
+            longwave: 0.34
+    4:
+        wall:
+            broadband: 0.07
+            shortwave: 0.07
+            longwave: 0.07
+        roof:
+            broadband: 0.07
+            shortwave: 0.07
+            longwave: 0.07
+        win_wall:
+            broadband: 0.12
+            shortwave: 0.12
+            longwave: 0.12
+        win_roof:
+            broadband: 0.12
+            shortwave: 0.12
+            longwave: 0.12
+        green_wall:
+            broadband: 0.25
+            shortwave: 0.14
+            longwave: 0.34
+        green_roof:
+            broadband: 0.25
+            shortwave: 0.14
+            longwave: 0.34
+    5:
+        wall:
+            broadband: 0.07
+            shortwave: 0.07
+            longwave: 0.07
+        roof:
+            broadband: 0.07
+            shortwave: 0.07
+            longwave: 0.07
+        win_wall:
+            broadband: 0.12
+            shortwave: 0.12
+            longwave: 0.12
+        win_roof:
+            broadband: 0.12
+            shortwave: 0.12
+            longwave: 0.12
+        green_wall:
+            broadband: 0.25
+            shortwave: 0.14
+            longwave: 0.34
+        green_roof:
+            broadband: 0.25
+            shortwave: 0.14
+            longwave: 0.34
+    6:
+        wall:
+            broadband: 0.07
+            shortwave: 0.07
+            longwave: 0.07
+        roof:
+            broadband: 0.07
+            shortwave: 0.07
+            longwave: 0.07
+        win_wall:
+            broadband: 0.17
+            shortwave: 0.18
+            longwave: 0.18
+        win_roof:
+            broadband: 0.17
+            shortwave: 0.18
+            longwave: 0.18
+        green_wall:
+            broadband: 0.25
+            shortwave: 0.14
+            longwave: 0.34
+        green_roof:
+            broadband: 0.25
+            shortwave: 0.14
+            longwave: 0.34
+    7:
+        wall:
+            broadband: 0.3
+            shortwave: 0.3
+            longwave: 0.3
+        roof:
+            broadband: 0.17
+            shortwave: 0.17
+            longwave: 0.17
+        win_wall:
+            broadband: 0.12
+            shortwave: 0.12
+            longwave: 0.12
+        win_roof:
+            broadband: 0.12
+            shortwave: 0.12
+            longwave: 0.12
+        green_wall:
+            broadband: 0.25
+            shortwave: 0.14
+            longwave: 0.34
+        green_roof:
+            broadband: 0.25
+            shortwave: 0.14
+            longwave: 0.34

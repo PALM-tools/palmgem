@@ -450,6 +450,23 @@
 | **building_surface_pars_repl.#**        | [ [ 99999, 0.5 ], [ 99999, 0.5 ] ]                                                                                      | List of specific replacement in building surface pars, more info in docs                                                                                             |
 | ****                                    |                                                                                                                         |                                                                                                                                                                      |
 
+### TODO: include into table
+columns:
+    catland: ['katland']
+    ...    A list of all potential names from given variable, it standardize naming in postgres columns
+
+canopy:
+    using_lai: False
+    lai_mod: 1.0   -- Multiplication of lai raster
+    canopy_height_mod: 1.0 -- Multiplication of canopy height raster -->> mainly for scenario generation
+
+prepare_albedo_type: False   # A option to prepare albedo pars from those parameters
+vegetation_type_albedos:
+    1:
+        broadband: 0.08
+        shortwave: 0.08
+        longwave: 0.08   -- Albedo values inserted into PALM. Maily for scenario generation
+
 ### Shortcuts
 l ... landcover, r ... building roof, w ... building wall (above groud floor level) \
 pr ... roof, pg ... ground floor, pu ... upper, pd ... downward facing, b ... bridge

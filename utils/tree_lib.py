@@ -40,7 +40,7 @@ def process_trees(cfg, connection, cur):
     cur.execute(sqltext)
     sql_debug(connection)
     debug('Get max height of trees')
-    sqltext = 'select max(vysstr) from "{0}"."{1}"'.format(cfg.domain.case_schema, cfg.tables.trees)
+    sqltext = 'select max(treeh) from "{0}"."{1}"'.format(cfg.domain.case_schema, cfg.tables.trees)
     cur.execute(sqltext)
     sql_debug(connection)
     thm = cur.fetchone()[0]
@@ -88,16 +88,16 @@ def process_lai(cfg, connection, cur):
                 lg.id as id, 
                 r.lai as lai
             from "{0}"."{1}" lg
-        JOIN LATERAL ( SELECT ST_Value(rast, ST_SetSRID(ST_Point(lg.xcen, lg.ycen), %s)) AS lai 
-                       FROM "{0}"."{2}"
-                       WHERE ST_Intersects(rast, ST_SetSRID(ST_Point(lg.xcen, lg.ycen), %s))
-                       limit 1) r on true 		   
+            JOIN LATERAL ( SELECT ST_Value(rast, lg.point) AS lai 
+                           FROM "{0}"."{2}"
+                           WHERE ST_Intersects(tile_extent, lg.point)
+                           limit 1) r on true 		   
         )
         update "{0}"."{1}"  lg
-        set lai = lai.lai
+        set lai = lai.lai * {3}
         from lai
         where lai.id = lg.id;
-    """.format(cfg.domain.case_schema, cfg.tables.grid, cfg.tables.lai)
+    """.format(cfg.domain.case_schema, cfg.tables.grid, cfg.tables.lai, cfg.canopy.lai_mod)
     cur.execute(sqltext, (cfg.srid_palm, cfg.srid_palm, ))
     connection.commit()
     sql_debug(connection)
@@ -109,16 +109,16 @@ def process_lai(cfg, connection, cur):
             lg.id as id, 
             r.height as height
         from "{0}"."{1}" lg
-        JOIN LATERAL ( SELECT ST_Value(rast, ST_SetSRID(ST_Point(lg.xcen, lg.ycen), %s)) AS height 
-                       FROM "{0}"."{2}"
-                       WHERE ST_Intersects(rast,  ST_SetSRID(ST_Point(lg.xcen, lg.ycen), %s))
-                       limit 1) r on true 		   
+            JOIN LATERAL ( SELECT ST_Value(rast, lg.point) AS height 
+                           FROM "{0}"."{2}"
+                           WHERE ST_Intersects(tile_extent,  lg.point)
+                           limit 1) r on true 		   
         )
         update "{0}"."{1}" lg
-        set canopy_height = case when ch.height >= 5.0 then ch.height else 0.0 end
+        set canopy_height = case when ch.height >= 5.0 then ch.height * {3} else 0.0 end
         from ch
         where ch.id = lg.id;
-    """.format(cfg.domain.case_schema, cfg.tables.grid, cfg.tables.canopy_height)
+    """.format(cfg.domain.case_schema, cfg.tables.grid, cfg.tables.canopy_height, cfg.canopy.canopy_height_mod)
     cur.execute(sqltext, (cfg.srid_palm, cfg.srid_palm, ))
     connection.commit()
     sql_debug(connection)

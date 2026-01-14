@@ -29,6 +29,7 @@ Buildings 3D, Brief description of processing of buildings 3d are shown [HERE](d
 LOD2 input for detailed parameterization of surfaces is documented [HERE](docs/lod2.md) \
 Leaf area density calculation is described [HERE](docs/lad.md) \
 Surface fraction description is [HERE](docs/surf_frac.md)
+Imperious surface description is [HERE](docs/impervious.md)
 
 ## Contributing / Support
 If you wish to use your own dataset with more detailed parameterization, please contact us. We will gladly help with implementation.

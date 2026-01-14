@@ -33,6 +33,180 @@ from scipy.linalg import lstsq, norm
 from utils.palm_static_pg_lib_netcdf import *
 from utils.visualization import create_slanted_vtk
 
+def preprocess_building_corners(cfg, connection, cur):
+    """ Process landcover, smooth all possitive or negative corners in buildings. """
+    debug('Fetch number of points in landcover, to see if temporal evolution')
+
+    sqltext = f"""
+        select count(*)
+        from (select ST_DumpPoints(l.geom) 
+          from "{cfg.domain.case_schema}"."{cfg.tables.build_new}" l) l
+    """
+    cur.execute(sqltext)
+    npoints = cur.fetchone()[0]
+
+    debug(f'Start at {npoints}')
+
+    for i in range(1, 6):
+
+        sqltext = f"""
+        drop table if exists "{cfg.domain.case_schema}".build_edge_correction;
+        create table "{cfg.domain.case_schema}".build_edge_correction as 
+        with densified_building AS (
+            SELECT
+                ST_Segmentize(geom, {cfg.slanted_pars.edge_segment_length}) AS geom,
+                lid
+            FROM "{cfg.domain.case_schema}"."{cfg.tables.build_new}" AS l
+            ),
+        building_dumped_rings AS (
+            SELECT
+                b.lid,
+                (ST_DumpRings(b.geom)).geom AS ring_geom,
+                (ST_DumpRings(b.geom)).path[1] AS ring_idx -- This is the key: 1 for outer, 2+ for inner
+            FROM
+                densified_building b
+        ),
+        ring_points AS (
+            SELECT
+                bdr.lid,
+                bdr.ring_idx, -- Retain the ring index (1=outer, 2+=inner)
+                (ST_DumpPoints(bdr.ring_geom)).geom AS point_geom,
+                (ST_DumpPoints(bdr.ring_geom)).path[2] AS point_idx -- Index of point within THIS ring
+            FROM
+                building_dumped_rings bdr
+        ),
+        lag_lead_points AS (
+            SELECT
+                lid,
+                ring_idx,
+                point_geom AS p2_geom,
+                point_idx AS p2_idx,
+                LAG(point_geom, 1) OVER (PARTITION BY lid, ring_idx ORDER BY point_idx) AS p1_geom,
+                LEAD(point_geom, 1) OVER (PARTITION BY lid, ring_idx ORDER BY point_idx) AS p3_geom
+            FROM
+                ring_points
+        ),
+        calc_stat as (
+            SELECT
+                lid,
+                ring_idx,
+                p2_idx as point_idx,
+                p2_geom as point_geom,
+                -- Calculate angle at P2 (using P1, P2, P3)
+                DEGREES(ST_Angle(p1_geom, p2_geom, p3_geom)) AS angle_at_p2_degrees,
+                -- Calculate distance between P1 and P3
+                ST_Distance(p1_geom, p3_geom) AS distance_p1_p3
+            FROM lag_lead_points
+            WHERE
+                p1_geom IS NOT NULL AND p3_geom IS NOT NULL
+            ORDER BY
+                lid, ring_idx, p2_idx),
+        filter_points as (
+            select 
+                *
+            from calc_stat
+            where angle_at_p2_degrees between {cfg.slanted_pars.edge_angle_min} and {cfg.slanted_pars.edge_angle_max}
+                and distance_p1_p3 > {cfg.slanted_pars.edge_2_edge_distance})
+                ,
+        reconstructed_rings AS (
+            SELECT
+                fp.lid,
+                fp.ring_idx,
+                ST_MakeLine(fp.point_geom ORDER BY fp.point_idx) AS reconstructed_linestring,
+                -- Get the first point of the line to check/ensure closure
+                (SELECT point_geom FROM filter_points fpi WHERE fpi.lid = fp.lid AND fpi.ring_idx = fp.ring_idx ORDER BY fpi.point_idx ASC LIMIT 1) AS first_point_of_ring,
+                -- Get the last point of the line to check/ensure closure
+                (SELECT point_geom FROM filter_points fpi WHERE fpi.lid = fp.lid AND fpi.ring_idx = fp.ring_idx ORDER BY fpi.point_idx DESC LIMIT 1) AS last_point_of_ring
+            FROM
+                filter_points fp
+            GROUP BY
+                fp.lid, fp.ring_idx
+        ),
+        closed_reconstructed_rings AS (
+            SELECT
+                lid,
+                ring_idx,
+                -- Conditionally add the first point to the end to ensure closure
+                CASE
+                    WHEN ST_Equals(first_point_of_ring, last_point_of_ring) THEN reconstructed_linestring
+                    ELSE ST_AddPoint(reconstructed_linestring, first_point_of_ring)
+                END AS closed_linestring
+            FROM
+                reconstructed_rings
+            where ST_NPoints(
+                        CASE
+                            WHEN ST_Equals(first_point_of_ring, last_point_of_ring) THEN reconstructed_linestring
+                            ELSE ST_AddPoint(reconstructed_linestring, first_point_of_ring)
+                        END
+                    ) >= 4
+        ),
+        corrected_winding_rings AS (
+            SELECT
+                lid,
+                ring_idx,
+                CASE
+                    -- Outer ring (ring_idx = 1) should be Counter-Clockwise (CCW). If it's CW, reverse it.
+                    WHEN ring_idx = 1 AND ST_IsPolygonCW (closed_linestring) THEN ST_Reverse(closed_linestring)
+                    -- Inner rings (ring_idx > 1) should be Clockwise (CW). If they're CCW, reverse them.
+                    WHEN ring_idx > 1 AND ST_IsPolygonCCW (closed_linestring) THEN ST_Reverse(closed_linestring)
+                    -- Otherwise, use the linestring as is (it's already in the correct winding order)
+                    ELSE closed_linestring
+                END AS closed_linestring
+            FROM
+                closed_reconstructed_rings
+        ),
+        -- Step 2: Separate outer and inner rings for each building
+        building_rings_separated AS (
+            SELECT
+                lid,
+                MAX(CASE WHEN ring_idx = 0 THEN closed_linestring END) AS outer_ring_geom,
+                ARRAY_AGG(CASE WHEN ring_idx <> 0 THEN closed_linestring END ORDER BY ring_idx) FILTER (WHERE ring_idx <> 0) AS inner_rings_array
+            FROM
+                corrected_winding_rings
+            GROUP BY
+                lid
+        )
+        -- Step 3: Create the final polygons
+        SELECT
+            brs.lid,
+            -- ST_MakePolygon requires a closed linestring for the outer ring, and an array of closed linestrings for inner rings.
+            -- Ensure outer_ring_geom is not NULL and is a valid linestring for polygon creation.
+            case when brs.inner_rings_array is not null then 
+                ST_MakeValid(ST_MakePolygon(brs.outer_ring_geom, brs.inner_rings_array)) 
+                else ST_MakeValid(ST_MakePolygon(brs.outer_ring_geom)) end AS geom
+        FROM
+            building_rings_separated brs
+        WHERE
+            brs.outer_ring_geom IS NOT NULL
+            AND ST_NPoints(brs.outer_ring_geom) >= 4 -- A polygon boundary needs at least 3 distinct points + closure point
+            AND ST_IsSimple(brs.outer_ring_geom) -- Ensures no self-intersections within the linestring before polygon formation
+            -- You might want to add similar checks for inner_rings_array elements if you're very strict
+            --AND ST_IsValid(ST_MakePolygon(brs.outer_ring_geom, brs.inner_rings_array)) -- Final validity check
+        ORDER BY
+            brs.lid;
+        """
+        cur.execute(sqltext)
+        connection.commit()
+
+        sqltext = f"""
+            select count(*)
+            from (select ST_DumpPoints(l.geom) 
+              from "{cfg.domain.case_schema}".build_edge_correction l) l
+        """
+        cur.execute(sqltext)
+        npoints = cur.fetchone()[0]
+
+        debug(f'i: {i}: {npoints}')
+
+        # update temp table to schema table
+        sqltext = f"""
+        drop table if exists "{cfg.domain.case_schema}"."{cfg.tables.build_new}";
+        create table "{cfg.domain.case_schema}"."{cfg.tables.build_new}" as
+        select * from "{cfg.domain.case_schema}".build_edge_correction;
+        """
+        cur.execute(sqltext)
+        connection.commit()
+
 def preprocess_terrain_height(cfg, connection, cur):
     """ correct terrain height """
     progress('Starting preprocessing of terrain height')
@@ -129,14 +303,14 @@ def preprocess_terrain_height(cfg, connection, cur):
     # update lid from nearest building polygon grid
     # TODO: ST_within
     if cfg.has_buildings:
+        verbose('updating lids in case of buildings polygons')
         sqltext = 'UPDATE "{0}"."{1}" AS h ' \
-                  'SET lid = (SELECT bg.lid FROM "{0}"."{2}" AS bg ' \
-                  '           WHERE type BETWEEN 900 AND 999 AND ST_Intersects(h.geom, lb.geom) ' \
-                  '           ORDER BY ST_DISTANCE(bg.geom, h.geom) LIMIT 1) ' \
-                  'FROM "{0}"."{3}" AS lb  ' \
+                  'SET lid = lb.lid ' \
+                  'FROM "{0}"."{2}" AS lb  ' \
                   'WHERE ST_Intersects(h.geom, lb.geom)' \
+                  '   and lb.type between 900 and 999' \
                   .format(cfg.domain.case_schema, cfg.tables.height_terr_corrected,
-                          cfg.tables.buildings_grid, cfg.tables.build_new)
+                          cfg.tables.landcover)
         cur.execute(sqltext)
         sql_debug(connection)
         connection.commit()
@@ -146,8 +320,9 @@ def preprocess_terrain_height(cfg, connection, cur):
                   'SET inside = TRUE ' \
                   'FROM "{0}"."{3}" AS lb  ' \
                   'WHERE ST_Intersects(h.geom, lb.geom)' \
+                  '   and lb.type between 900 and 999' \
                   .format(cfg.domain.case_schema, cfg.tables.height_terr_corrected,
-                          cfg.tables.buildings_grid, cfg.tables.build_new)
+                          cfg.tables.buildings_grid, cfg.tables.landcover)
         cur.execute(sqltext)
         sql_debug(connection)
         connection.commit()
@@ -157,12 +332,22 @@ def preprocess_terrain_height(cfg, connection, cur):
                   'SET height = bo.max ' \
                   'FROM bo, "{0}"."{4}" AS lb ' \
                   'WHERE ST_Intersects(h.geom, lb.geom) AND bo.lid = h.lid ' \
+                  '   and lb.type between 900 and 999' \
                   .format(cfg.domain.case_schema, cfg.tables.height_terr_corrected,
-                          cfg.tables.buildings_offset, cfg.domain.origin_z, cfg.tables.build_new)
+                          cfg.tables.buildings_offset, cfg.domain.origin_z, cfg.tables.landcover)
         cur.execute(sqltext)
         sql_debug(connection)
         connection.commit()
 
+        # sqltext = f"""
+        #     update "{cfg.domain.case_schema}"."{cfg.tables.height_terr_corrected}" h
+        #     set height =
+        # """
+        # cur.execute(sqltext)
+        # sql_debug(connection)
+        # connection.commit()
+
+    verbose('start with checking height')
     sqltext = 'UPDATE "{0}"."{1}" AS h ' \
               'SET height_dummy = height'  \
               .format(cfg.domain.case_schema, cfg.tables.height_terr_corrected)
@@ -170,6 +355,7 @@ def preprocess_terrain_height(cfg, connection, cur):
     sql_debug(connection)
     connection.commit()
 
+    verbose('Putting indexes')
     # put an indexes on the table
     sqltext = 'CREATE INDEX terr_height_corrected_j_i_idx ON "{0}"."{1}" (i asc, j asc)'\
                .format(cfg.domain.case_schema, cfg.tables.height_terr_corrected)
@@ -211,6 +397,7 @@ def preprocess_terrain_height(cfg, connection, cur):
     sql_debug(connection)
     connection.commit()
 
+    verbose(f'There is {len(ij2corr)} to correct')
     sqlcorr = 'UPDATE "{0}"."{1}" SET ' \
               'height = {2} ' \
               'WHERE (i = {3} AND j = {4}) OR (i = {5} AND j = {6}) '
@@ -261,6 +448,7 @@ def preprocess_building_height(cfg, connection, cur):
               'SELECT xmi, ymi, i, j, ' \
               'CAST(NULL AS double precision) AS height, ' \
               'CAST(NULL AS double precision) AS height_bottom, ' \
+              'false as dummy_point, ' \
               'ST_SetSRID(ST_MakePoint(xmi, ymi), %s) AS geom ' \
               'FROM "{0}"."{2}" ' \
               .format(cfg.domain.case_schema, cfg.tables.height_corrected, cfg.tables.grid)
@@ -269,7 +457,7 @@ def preprocess_building_height(cfg, connection, cur):
     connection.commit()
 
     sqltext = 'INSERT INTO "{0}"."{1}" ' \
-              'SELECT xmi, yma, i, {3}+1, NULL, NULL, ST_SetSRID(ST_MakePoint(xmi, yma), %s) ' \
+              'SELECT xmi, yma, i, {3}+1, NULL, NULL, false, ST_SetSRID(ST_MakePoint(xmi, yma), %s) ' \
               'FROM "{0}"."{2}" ' \
               'WHERE j = {3}'.format(cfg.domain.case_schema, cfg.tables.height_corrected, cfg.tables.grid, cfg.domain.ny-1)
     cur.execute(sqltext, (cfg.srid_palm, ))
@@ -277,7 +465,7 @@ def preprocess_building_height(cfg, connection, cur):
     connection.commit()
 
     sqltext = 'INSERT INTO "{0}"."{1}" ' \
-              'SELECT xma, ymi, i + 1, j, NULL, NULL, ST_SetSRID(ST_MakePoint(xma, ymi), %s) ' \
+              'SELECT xma, ymi, i + 1, j, NULL, NULL, false, ST_SetSRID(ST_MakePoint(xma, ymi), %s) ' \
               'FROM "{0}"."{2}" ' \
               'WHERE i = {3}'.format(cfg.domain.case_schema, cfg.tables.height_corrected, cfg.tables.grid, cfg.domain.nx-1)
     cur.execute(sqltext, (cfg.srid_palm, ))
@@ -285,7 +473,7 @@ def preprocess_building_height(cfg, connection, cur):
     connection.commit()
 
     sqltext = 'INSERT INTO "{0}"."{1}" ' \
-              'SELECT xma, yma, i + 1, j + 1, NULL, NULL, ST_SetSRID(ST_MakePoint(xma, yma), %s) ' \
+              'SELECT xma, yma, i + 1, j + 1, NULL, NULL, false, ST_SetSRID(ST_MakePoint(xma, yma), %s) ' \
               'FROM "{0}"."{2}" ' \
               'WHERE i = {3} AND j = {4}'.format(cfg.domain.case_schema, cfg.tables.height_corrected,
                                                  cfg.tables.grid, cfg.domain.nx-1, cfg.domain.ny-1)
@@ -295,7 +483,7 @@ def preprocess_building_height(cfg, connection, cur):
 
 
     sqltext = 'INSERT INTO "{0}"."{1}" ' \
-              'SELECT xmi, yma, i, j + 1, NULL, NULL, ST_SetSRID(ST_MakePoint(xmi, yma), %s) ' \
+              'SELECT xmi, yma, i, j + 1, NULL, NULL, false, ST_SetSRID(ST_MakePoint(xmi, yma), %s) ' \
               'FROM "{0}"."{2}" AS g ' \
               'WHERE NOT EXISTS (SELECT 1 FROM "{0}"."{1}" AS tc WHERE tc.i = g.i AND tc.j = g.j + 1)'\
               .format(cfg.domain.case_schema, cfg.tables.height_corrected, cfg.tables.grid)
@@ -304,7 +492,7 @@ def preprocess_building_height(cfg, connection, cur):
     connection.commit()
 
     sqltext = 'INSERT INTO "{0}"."{1}" ' \
-              'SELECT xma, ymi, i + 1, j, NULL, NULL, ST_SetSRID(ST_MakePoint(xma, ymi), %s) ' \
+              'SELECT xma, ymi, i + 1, j, NULL, NULL, false, ST_SetSRID(ST_MakePoint(xma, ymi), %s) ' \
               'FROM "{0}"."{2}" AS g ' \
               'WHERE NOT EXISTS (SELECT 1 FROM "{0}"."{1}" AS tc WHERE tc.i = g.i + 1 AND tc.j = g.j)'\
               .format(cfg.domain.case_schema, cfg.tables.height_corrected, cfg.tables.grid)
@@ -313,7 +501,7 @@ def preprocess_building_height(cfg, connection, cur):
     connection.commit()
 
     sqltext = 'INSERT INTO "{0}"."{1}" ' \
-              'SELECT xma, yma, i + 1, j + 1, NULL, NULL, ST_SetSRID(ST_MakePoint(xma, yma), %s) ' \
+              'SELECT xma, yma, i + 1, j + 1, NULL, NULL, false, ST_SetSRID(ST_MakePoint(xma, yma), %s) ' \
               'FROM "{0}"."{2}" AS g ' \
               'WHERE NOT EXISTS (SELECT 1 FROM "{0}"."{1}" AS tc WHERE tc.i = g.i + 1 AND tc.j = g.j + 1)'\
               .format(cfg.domain.case_schema, cfg.tables.height_corrected, cfg.tables.grid)
@@ -324,16 +512,17 @@ def preprocess_building_height(cfg, connection, cur):
     # fill with height
     debug('Filling table {} with heights', cfg.tables.height_corrected)
     sqltext = 'UPDATE "{0}"."{1}" AS bh ' \
-              'SET height = (SELECT AVG(height) ' \
+              'SET height = (SELECT MAX(height) ' \
               '              FROM "{0}"."{2}" AS g ' \
               '              WHERE g.i BETWEEN bh.i-1 AND bh.i+1 AND ' \
               '                    g.j BETWEEN bh.j-1 AND bh.j+1 ) + th.height_dummy,' \
               '    height_bottom = th.height_dummy ' \
               'FROM "{0}"."{3}" AS th, "{0}"."{4}" AS lb ' \
               'WHERE th.i = bh.i AND th.j = bh.j AND ST_Intersects(bh.geom, lb.geom)' \
+              '   and lb.type between 900 and 999' \
               .format(cfg.domain.case_schema, cfg.tables.height_corrected,
                       cfg.tables.buildings_grid, cfg.tables.height_terr_corrected,
-                      cfg.tables.build_new)
+                      cfg.tables.landcover)
     cur.execute(sqltext)
     sql_debug(connection)
     connection.commit()
@@ -353,6 +542,25 @@ def preprocess_building_height(cfg, connection, cur):
     sql_debug(connection)
     connection.commit()
 
+    # -- OPTIMIZE HERE
+    debug('Update building height dummy point, so filtering algorithm would work near edges')
+    sqltext = f"""
+        update "{cfg.domain.case_schema}"."{cfg.tables.height_corrected}" bh
+        set dummy_point = true
+        from "{cfg.domain.case_schema}"."{cfg.tables.walls_outer}" wo
+        where bh.height is null
+            and st_dwithin(wo.geom, bh.geom, {cfg.domain.dx});
+    """
+    cur.execute(sqltext)
+    sql_debug(connection)
+    connection.commit()
+
+    # Now perform filtering
+    filter_building_heights(cfg, connection, cur)
+
+def filter_building_heights(cfg, connection, cur):
+    """ Special filter to find specific cases"""
+    debug('Apply specific building height filter')
     # now filter special cases
     sqltext = 'WITH hc_diag  AS (SELECT i,j,height FROM "{0}"."{1}"), ' \
               '     hc_top   AS (SELECT i,j,height FROM "{0}"."{1}"), ' \
@@ -376,7 +584,7 @@ def preprocess_building_height(cfg, connection, cur):
 
     sqlcorr = 'UPDATE "{0}"."{1}" SET ' \
               'height = {2} ' \
-              'WHERE (i = {3} AND j = {4}) OR (i = {5} AND j = {6}) '
+              'WHERE ((i = {3} AND j = {4}) OR (i = {5} AND j = {6})) and not dummy_point'
     for i, j, hh, hdiag, htop, hright, sml, hgh in ij2corr:
         verbose('Height correction for [i,j]:[{},{}]', i, j)
         verbose('\th:{}, hdiag:{}, htop:{}, hright:{}, sml: {}, hgh: {}', hh, hdiag, htop, hright, sml, hgh)
@@ -547,6 +755,19 @@ def preprocess_building_landcover(cfg, connection, cur):
     sql_debug(connection)
     connection.commit()
 
+    # now get rid of sharp edges
+    preprocess_building_corners(cfg, connection, cur)
+
+    # delete from build new too small object
+    sqltext = f"""
+    delete from "{cfg.domain.case_schema}"."{cfg.tables.build_new}"
+    where st_area(geom) < {4.0 * cfg.domain.dx * cfg.domain.dy};
+    """
+    cur.execute(sqltext)
+    sql_debug(connection)
+    connection.commit()
+
+
     # TODO: Drop tables convex buildings and segmentized walls
     debug('Droping temporal tables: {},{}', build_conv, build_seg)
 
@@ -557,7 +778,7 @@ def preprocess_building_landcover(cfg, connection, cur):
     debug('Joining corrected tables with original landcover')
     sqltext = 'DROP TABLE IF EXISTS "{0}"."{1}";' \
               'CREATE TABLE "{0}"."{1}" AS ' \
-              'SELECT ll.lid AS lid, 906 AS type, (ST_Dump(ST_Union(ST_Buffer(ll.geom, 0.00001)))).geom AS geom ' \
+              'SELECT ll.lid AS lid, 906 AS type, (ST_Dump(ST_Union(ST_Buffer(ll.geom, 0.0000001)))).geom AS geom ' \
               'FROM ' \
               '   (SELECT lb.lid, ' \
               '       (ST_Dump(ST_Intersection(l.geom, lb.geom))).geom AS geom ' \
@@ -581,7 +802,7 @@ def preprocess_building_landcover(cfg, connection, cur):
     debug('Creating difference between corrected building and original landcover')
     sqltext = 'DROP TABLE IF EXISTS "{0}"."{1}";' \
               'CREATE TABLE "{0}"."{1}" AS ' \
-              'WITH lb AS (SELECT ST_Union(ST_Buffer(geom, 0.00001)) AS geom FROM "{0}"."{2}") ' \
+              'WITH lb AS (SELECT ST_Union(ST_Buffer(geom, 0.0000001)) AS geom FROM "{0}"."{2}") ' \
               'SELECT l.lid, l.type, ' \
               '       (ST_Dump(ST_Difference(l.geom, lb.geom))).geom AS geom ' \
               'FROM "{0}"."{3}" AS l, lb'\
@@ -676,12 +897,15 @@ def preprocess_building_landcover(cfg, connection, cur):
         sql_debug(connection)
         connection.commit()
 
-    # Put generating outer wall and wals here
 
+
+def create_outer_walls_and_roofs_cct(cfg, connection, cur):
+    """ Create, if not exists an outer walls and roofs. """
+    # Put generating outer wall and wals here
     progress('Generating outer wall')
-    sqltext = ('DROP TABLE IF EXISTS "{0}"."{1}";' \
-              'CREATE TABLE "{0}"."{1}" AS SELECT ' \
-              'ST_SetSRID(ST_Boundary(ST_Union(geom)), %s) AS geom ' \
+    sqltext = ('DROP TABLE IF EXISTS "{0}"."{1}";'
+              'CREATE TABLE "{0}"."{1}" AS SELECT '
+              'ST_SetSRID(ST_Boundary(ST_Union((ST_Buffer(geom, 0.0000001)))), %s) AS geom ' \
               'FROM "{0}"."{2}"'
               'WHERE type between 900 and 999'
                .format(cfg.domain.case_schema, cfg.tables.walls_outer, cfg.tables.landcover,))
@@ -972,6 +1196,7 @@ def create_slanted_walls_terrain(cfg, connection, cur):
                 sql_debug(connection)
                 connection.commit()
 
+    # -- OPTMIZE HERE
     debug('Correcting the ones near the wall (just in case)')
     dist2edge = cfg.slanted_pars.dist2edge
     sqltext = 'UPDATE "{0}"."{1}" AS hc SET height = ' \
@@ -1156,6 +1381,12 @@ def create_slanted_terrain(cfg, connection, cur):
     sql_debug(connection)
     connection.commit()
 
+    debug('Create index on i,j and id')
+    cur.execute(f"""CREATE INDEX slanted_terrain_ji_idx ON "{cfg.domain.case_schema}"."{cfg.tables.slanted_terrain}" (i asc, j asc);
+                    CREATE INDEX slanted_terrain_id_idx ON "{cfg.domain.case_schema}"."{cfg.tables.slanted_terrain}" (id asc)""")
+    sql_debug(connection)
+    connection.commit()
+
     if cfg.has_buildings:
         debug('Insert buildings surrounding into slanted terrain table')
         sqltext = 'INSERT INTO "{0}"."{1}" ' \
@@ -1184,18 +1415,19 @@ def create_slanted_terrain(cfg, connection, cur):
     sql_debug(connection)
     connection.commit()
 
+    # -- OPTIMIZE HERE
     if cfg.has_buildings:
         debug('Insert the rest of polygons into table {}', cfg.tables.slanted_terrain)
-        sqltext = 'WITH nb AS (SELECT geom FROM "{0}"."{3}") ' \
-                  'INSERT INTO "{0}"."{1}" (id, lid, i, j, n_edges) ' \
-                  'SELECT id, g.lid, g.i, g.j, 4 ' \
-                  'FROM "{0}"."{2}" AS g ' \
-                  'WHERE (g.id NOT IN (SELECT id FROM "{0}"."{1}") AND ' \
-                  '       g.id NOT IN (SELECT id FROM "{0}"."{2}" AS gg, nb ' \
-                  '                   WHERE ST_Intersects(ST_SetSRID(ST_Point(gg.xcen,gg.ycen), %s), nb.geom))) ' \
-                  .format(cfg.domain.case_schema, cfg.tables.slanted_terrain, cfg.tables.grid,
-                          cfg.tables.build_new)
-        cur.execute(sqltext, (cfg.srid_palm,))
+        sqltext = f"""
+            INSERT INTO "{cfg.domain.case_schema}"."{cfg.tables.slanted_terrain}" 
+            (id, lid, i, j, n_edges) 
+            select g.id, g.lid, g.i, g.j, 4 
+            from "{cfg.domain.case_schema}"."{cfg.tables.grid}" g
+                left join "{cfg.domain.case_schema}"."{cfg.tables.slanted_terrain}" st on st.id = g.id
+                left join "{cfg.domain.case_schema}"."{cfg.tables.buildings_grid}" bg on bg.id = g.id
+            where st.id is null and bg.id is null
+        """
+        cur.execute(sqltext)
         sql_debug(connection)
         connection.commit()
     else:
@@ -1209,6 +1441,7 @@ def create_slanted_terrain(cfg, connection, cur):
         sql_debug(connection)
         connection.commit()
 
+    debug('updating p1 in slanted terrain')
     sqltext = 'UPDATE "{0}"."{1}" AS st SET ' \
               ' p1 = ST_SetSRID(ST_MakePoint(ST_X(th1.geom), ST_Y(th1.geom), th1.height),%s)' \
               'FROM "{0}"."{3}" AS th1 ' \
@@ -1220,6 +1453,7 @@ def create_slanted_terrain(cfg, connection, cur):
     sql_debug(connection)
     connection.commit()
 
+    debug('updating pě in slanted terrain')
     sqltext = 'UPDATE "{0}"."{1}" AS st SET ' \
               ' p2 = ST_SetSRID(ST_MakePoint(ST_X(th2.geom), ST_Y(th2.geom), th2.height),%s)' \
               'FROM "{0}"."{3}" AS th2 ' \
@@ -1231,6 +1465,7 @@ def create_slanted_terrain(cfg, connection, cur):
     sql_debug(connection)
     connection.commit()
 
+    debug('updating p3 in slanted terrain')
     sqltext = 'UPDATE "{0}"."{1}" AS st SET ' \
               ' p3 = ST_SetSRID(ST_MakePoint(ST_X(th3.geom), ST_Y(th3.geom), th3.height),%s)' \
               'FROM "{0}"."{3}" AS th3 ' \
@@ -1242,6 +1477,7 @@ def create_slanted_terrain(cfg, connection, cur):
     sql_debug(connection)
     connection.commit()
 
+    debug('updating p4 in slanted terrain')
     sqltext = 'UPDATE "{0}"."{1}" AS st SET ' \
               ' p4 = ST_SetSRID(ST_MakePoint(ST_X(th4.geom), ST_Y(th4.geom), th4.height),%s)' \
               'FROM "{0}"."{3}" AS th4 ' \
@@ -1297,9 +1533,12 @@ def create_slanted_terrain(cfg, connection, cur):
     sql_debug(connection)
     connection.commit()
 
-    sqltext = 'UPDATE "{0}"."{1}" SET ' \
-              'geom3d = ST_SetSRID(ST_ConvexHull(ST_Collect(ARRAY[' \
-              '         p1, p2, p3, p4, p5])), %s)   '.format(cfg.domain.case_schema, cfg.tables.slanted_terrain)
+    sqltext = ("""
+        UPDATE "{0}"."{1}" SET 
+          geom3d = ST_SetSRID(ST_ConvexHull(ST_Collect(ARRAY[
+                   p1, p2, p3, p4, p5])), %s)  
+          where n_edges > 2"""
+            .format(cfg.domain.case_schema, cfg.tables.slanted_terrain))
     cur.execute(sqltext, (cfg.srid_palm,))
     sql_debug(connection)
     connection.commit()
@@ -1367,6 +1606,95 @@ def create_slanted_walls(cfg, connection, cur):
               '                      ST_EndPoint(  ST_GeometryN(ST_Intersection(geom, wall_geom),1)) ' \
               '                                    ) ' \
               'WHERE ST_NumGeometries(ST_Intersection(geom, wall_geom)) = 3 AND ST_NPoints(intersec) > 2'.format(cfg.domain.case_schema, cfg.tables.slanted_wall, cfg.tables.walls_outer, cfg.tables.grid)
+    cur.execute(sqltext)
+    sql_debug(connection)
+    connection.commit()
+
+    debug('Snap to grid building walls and omit short wall lines')
+    # sqltext = f"""
+    #     -- entries to delete
+    #     delete from "{cfg.domain.case_schema}"."{cfg.tables.slanted_wall}"
+    #     where  (st_distance(st_setsrid(st_makepoint(i*{cfg.domain.dx} + {cfg.domain.origin_x},     j*{cfg.domain.dy} + {cfg.domain.origin_y}), {cfg.srid_palm}), ST_GeometryN(intersec, 1)) < 1e-3
+    #             and st_distance(st_setsrid(st_makepoint(i*{cfg.domain.dx} + {cfg.domain.origin_x},     j*{cfg.domain.dy} + {cfg.domain.origin_y}), {cfg.srid_palm}), ST_GeometryN(intersec, 2)) < 1e-3)
+    #         or (st_distance(st_setsrid(st_makepoint((i+1)*{cfg.domain.dx} + {cfg.domain.origin_x}, j*{cfg.domain.dy} + {cfg.domain.origin_y}), {cfg.srid_palm}), ST_GeometryN(intersec, 1)) < 1e-3
+    #             and st_distance(st_setsrid(st_makepoint((i+1)*{cfg.domain.dx} + {cfg.domain.origin_x}, j*{cfg.domain.dy} + {cfg.domain.origin_y}), {cfg.srid_palm}), ST_GeometryN(intersec, 2)) < 1e-3)
+    #         or (st_distance(st_setsrid(st_makepoint(i*{cfg.domain.dx} + {cfg.domain.origin_x},     (j+1)*{cfg.domain.dy} + {cfg.domain.origin_y}), {cfg.srid_palm}), ST_GeometryN(intersec, 1)) < 1e-3
+    #             and st_distance(st_setsrid(st_makepoint(i*{cfg.domain.dx} + {cfg.domain.origin_x},     (j+1)*{cfg.domain.dy} + {cfg.domain.origin_y}), {cfg.srid_palm}), ST_GeometryN(intersec, 2)) < 1e-3)
+    #         or (st_distance(st_setsrid(st_makepoint((i+1)*{cfg.domain.dx} + {cfg.domain.origin_x}, (j+1)*{cfg.domain.dy} + {cfg.domain.origin_y}), {cfg.srid_palm}), ST_GeometryN(intersec, 1)) < 1e-3
+    #             and st_distance(st_setsrid(st_makepoint((i+1)*{cfg.domain.dx} + {cfg.domain.origin_x}, (j+1)*{cfg.domain.dy} + {cfg.domain.origin_y}), {cfg.srid_palm}), ST_GeometryN(intersec, 2)) < 1e-3)
+    #     ;
+
+    min_dist_wall = 1e-3
+    sqltext = f"""
+        -- extend distance from corner point in those that are too close. From 1e-3 to 5e-2 * dx
+        drop table if exists wall_point_adjust;
+        create temp table wall_point_adjust as 
+        with wall_points as (
+            select
+                sw.id, 
+                sw.i, 
+                sw.j,
+                (st_dump(intersec)).geom as point,
+                (st_dump(intersec)).path[1] as pidx
+            from "{cfg.domain.case_schema}"."{cfg.tables.slanted_wall}" sw
+        )
+        select 
+            abs(st_x(point) - (i*    {cfg.domain.dx} + {cfg.domain.origin_x})) / {cfg.domain.dx} as x_dist_w,
+            abs(st_x(point) - ((i+1)*{cfg.domain.dx} + {cfg.domain.origin_x})) / {cfg.domain.dx} as x_dist_e,
+            abs(st_y(point) - (j*    {cfg.domain.dy} + {cfg.domain.origin_y})) / {cfg.domain.dy} as y_dist_s,
+            abs(st_y(point) - ((j+1)*{cfg.domain.dy} + {cfg.domain.origin_y})) / {cfg.domain.dy} as y_dist_n,
+            *
+        from wall_points wp
+        --where 
+        --    pidx in (1 ,2) and (
+        --       (st_distance(st_setsrid(st_makepoint(i*{cfg.domain.dx} + {cfg.domain.origin_x},     j*{cfg.domain.dy} + {cfg.domain.origin_y}), {cfg.srid_palm}), point)) < 1e-3
+        --    or (st_distance(st_setsrid(st_makepoint((i+1)*{cfg.domain.dx} + {cfg.domain.origin_x}, j*{cfg.domain.dy} + {cfg.domain.origin_y}), {cfg.srid_palm}), point)) < 1e-3
+        --    or (st_distance(st_setsrid(st_makepoint(i*{cfg.domain.dx} + {cfg.domain.origin_x},     (j+1)*{cfg.domain.dy} + {cfg.domain.origin_y}), {cfg.srid_palm}), point)) < 1e-3
+        --    or (st_distance(st_setsrid(st_makepoint((i+1)*{cfg.domain.dx} + {cfg.domain.origin_x}, (j+1)*{cfg.domain.dy} + {cfg.domain.origin_y}), {cfg.srid_palm}), point)) < 1e-3
+        --    )
+        ;
+        
+        drop table if exists wall_point_updater;
+        create temp table wall_point_updater as
+        with wall_points_modified as (
+            select 
+                sa.id, sa.i, sa.j, 
+             case when x_dist_w < 1e-8 and y_dist_n < {min_dist_wall} then -- case where point s on jline and is close to left bottom point in y direction
+                 st_setsrid(st_makepoint((sa.i) * {cfg.domain.dx} + {cfg.domain.origin_x},  (sa.j + 1.0 - {min_dist_wall}) * {cfg.domain.dy} + {cfg.domain.origin_y}), {cfg.srid_palm})
+			      when x_dist_w < 1e-8 and y_dist_s < {min_dist_wall} then 
+                 st_setsrid(st_makepoint((sa.i) * {cfg.domain.dx} + {cfg.domain.origin_x},  (sa.j + {min_dist_wall}) * {cfg.domain.dy} + {cfg.domain.origin_y}), {cfg.srid_palm})
+			      when x_dist_e < 1e-8 and y_dist_n < {min_dist_wall} then 
+                 st_setsrid(st_makepoint((sa.i+1) * {cfg.domain.dx} + {cfg.domain.origin_x},  (sa.j + 1.0 - {min_dist_wall}) * {cfg.domain.dy} + {cfg.domain.origin_y}), {cfg.srid_palm})
+			      when x_dist_e < 1e-8 and y_dist_s < {min_dist_wall} then 
+                 st_setsrid(st_makepoint((sa.i+1) * {cfg.domain.dx} + {cfg.domain.origin_x},  (sa.j + {min_dist_wall}) * {cfg.domain.dy} + {cfg.domain.origin_y}), {cfg.srid_palm})
+				 
+			      when x_dist_w < {min_dist_wall} and y_dist_s < 1e-8 then -- case where point is on iline
+                 st_setsrid(st_makepoint((sa.i + {min_dist_wall}) * {cfg.domain.dx} + {cfg.domain.origin_x},  (sa.j) * {cfg.domain.dy} + {cfg.domain.origin_y}), {cfg.srid_palm})
+				  when x_dist_w < {min_dist_wall} and y_dist_n < 1e-8 then
+                 st_setsrid(st_makepoint((sa.i + {min_dist_wall}) * {cfg.domain.dx} + {cfg.domain.origin_x},  (sa.j+1) * {cfg.domain.dy} + {cfg.domain.origin_y}), {cfg.srid_palm})
+				  when x_dist_e < {min_dist_wall} and y_dist_s < 1e-8 then -- case where point is on iline
+                 st_setsrid(st_makepoint((sa.i + 1.0 - {min_dist_wall}) * {cfg.domain.dx} + {cfg.domain.origin_x},  (sa.j) * {cfg.domain.dy} + {cfg.domain.origin_y}), {cfg.srid_palm})
+				  when x_dist_e < {min_dist_wall} and y_dist_n < 1e-8 then
+                 st_setsrid(st_makepoint((sa.i + 1.0 - {min_dist_wall}) * {cfg.domain.dx} + {cfg.domain.origin_x},  (sa.j+1) * {cfg.domain.dy} + {cfg.domain.origin_y}), {cfg.srid_palm})
+             else point
+             end as point
+            from wall_point_adjust sa
+        )
+        select 
+            wp.id, wp.i, wp.j, 
+            ST_Multi(ST_Union(array_agg(point))) as intersec
+            --case when pidx = 1 then ST_Multi(ST_Union(array_agg[p1,p2])) else ST_Multi(ST_Union(array[p2,p1])) end as intersec
+        from wall_points_modified wp
+        group by wp.id, wp.i, wp.j;
+        
+        create index wall_point_updater_idx on wall_point_updater(id);
+        
+        -- Now update intersect in the main table
+        update  "{cfg.domain.case_schema}"."{cfg.tables.slanted_wall}" sw
+        set intersec = wp.intersec
+        from wall_point_updater wp
+        where wp.id = sw.id;
+    """
     cur.execute(sqltext)
     sql_debug(connection)
     connection.commit()
@@ -1516,7 +1844,7 @@ def create_slanted_walls(cfg, connection, cur):
     # connection.commit()
 
     debug('Deciding which split take')
-    sqltext = 'WITH lb AS (SELECT geom FROM "{0}"."{2}")' \
+    sqltext = 'WITH lb AS (SELECT geom FROM "{0}"."{2}" l where l.type between 900 and 999)' \
               'UPDATE "{0}"."{1}" AS sw SET split = ' \
               'CASE WHEN ST_Area(ST_Intersection(lb.geom, split1)) / ST_Area(split1) > ' \
               '          ST_Area(ST_Intersection(lb.geom, split2)) / ST_Area(split2) ' \
@@ -1525,7 +1853,7 @@ def create_slanted_walls(cfg, connection, cur):
               'END ' \
               'FROM lb ' \
               'WHERE ST_Intersects(sw.geom,lb.geom)'\
-        .format(cfg.domain.case_schema, cfg.tables.slanted_wall, cfg.tables.build_new)
+        .format(cfg.domain.case_schema, cfg.tables.slanted_wall, cfg.tables.landcover)
     cur.execute(sqltext)
     sql_debug(connection)
     connection.commit()
@@ -1569,24 +1897,41 @@ def create_slanted_walls(cfg, connection, cur):
         sql_debug(connection)
         connection.commit()
 
+    for i in range(1):
+        # Iterate to finial solution
+        calculate_slanted_walls_height(cfg, connection, cur)
+        slanted_wall_height_modifications(cfg, connection, cur)
+        calculate_slanted_walls_height(cfg, connection, cur)
+
+
+    create_aux_slanted_wall_height_points(cfg, connection, cur)
+
+    filter_building_heights(cfg, connection, cur)
+    filter_building_heights(cfg, connection, cur)
+    filter_building_heights(cfg, connection, cur)
+    filter_building_heights(cfg, connection, cur)
+    filter_building_heights(cfg, connection, cur)
+
+def calculate_slanted_walls_height(cfg, connection, cur):
+    """ Calculate slanted walls heights """
     # Process walls heights
     debug('Calculation of z1 (top), z1b (bottom), z2, z2b in the slanted walls from buildings heights')
     max_dist = cfg.slanted_pars.wall_build_height_max_dist
     sqltext = 'UPDATE "{0}"."{1}" SET ' \
               'z1 = FLOOR((SELECT height FROM "{0}"."{3}" hc' \
-              '             WHERE ST_DWithin(point1, hc.geom, {4}) AND height IS NOT NULL ' \
+              '             WHERE ST_DWithin(point1, hc.geom, {4}) AND height IS NOT NULL and not dummy_point' \
               '             ORDER BY ST_Distance(point1, hc.geom) ' \
               '             LIMIT 1) / {2}) * {2}, ' \
               'z2 = FLOOR((SELECT height FROM "{0}"."{3}" hc' \
-              '             WHERE ST_DWithin(point2, hc.geom, {4}) AND height IS NOT NULL ' \
+              '             WHERE ST_DWithin(point2, hc.geom, {4}) AND height IS NOT NULL and not dummy_point' \
               '             ORDER BY ST_Distance(point2, hc.geom) ' \
               '             LIMIT 1) / {2}) * {2}, ' \
               'z1b = FLOOR((SELECT height_bottom FROM "{0}"."{3}" hc' \
-              '             WHERE ST_DWithin(point1, hc.geom, {4}) AND height IS NOT NULL ' \
+              '             WHERE ST_DWithin(point1, hc.geom, {4}) AND height IS NOT NULL and not dummy_point' \
               '             ORDER BY ST_Distance(point1, hc.geom) ' \
               '             LIMIT 1) / {2}) * {2}, ' \
               'z2b = FLOOR((SELECT height_bottom FROM "{0}"."{3}" hc' \
-              '             WHERE ST_DWithin(point2, hc.geom, {4}) AND height IS NOT NULL ' \
+              '             WHERE ST_DWithin(point2, hc.geom, {4}) AND height IS NOT NULL and not dummy_point' \
               '             ORDER BY ST_Distance(point2, hc.geom) ' \
               '             LIMIT 1) / {2}) * {2} ' \
               ''.format(cfg.domain.case_schema, cfg.tables.slanted_wall, cfg.domain.dz,
@@ -1599,44 +1944,52 @@ def create_slanted_walls(cfg, connection, cur):
     debug('Correcting missing heights')
     sqltext = 'UPDATE "{0}"."{1}" SET ' \
               'z1 = FLOOR((SELECT height FROM "{0}"."{3}" hc' \
-              '             WHERE height IS NOT NULL ' \
+              '             WHERE height IS NOT NULL and not dummy_point'  \
+              '                 and st_dwithin(point1, hc.geom, {4}) ' \
               '             ORDER BY ST_Distance(point1, hc.geom) ' \
               '             LIMIT 1) / {2}) * {2}' \
               'WHERE z1 IS NULL' \
-              .format(cfg.domain.case_schema, cfg.tables.slanted_wall, cfg.domain.dz, cfg.tables.height_corrected)
+              .format(cfg.domain.case_schema, cfg.tables.slanted_wall, cfg.domain.dz,
+                      cfg.tables.height_corrected, cfg.domain.dx * 2.0)
     cur.execute(sqltext)
     sql_debug(connection)
     connection.commit()
 
     sqltext = 'UPDATE "{0}"."{1}" SET ' \
               'z1b = FLOOR((SELECT height_bottom FROM "{0}"."{3}" hc' \
-              '             WHERE height_bottom IS NOT NULL ' \
+              '             WHERE height_bottom IS NOT NULL and not dummy_point' \
+              '                 and st_dwithin(point1, hc.geom, {4})' \
               '             ORDER BY ST_Distance(point1, hc.geom) ' \
               '             LIMIT 1) / {2}) * {2}' \
               'WHERE z1b IS NULL' \
-              .format(cfg.domain.case_schema, cfg.tables.slanted_wall, cfg.domain.dz, cfg.tables.height_corrected)
+              .format(cfg.domain.case_schema, cfg.tables.slanted_wall, cfg.domain.dz,
+                      cfg.tables.height_corrected, cfg.domain.dx * 2.0)
     cur.execute(sqltext)
     sql_debug(connection)
     connection.commit()
 
     sqltext = 'UPDATE "{0}"."{1}" SET ' \
               'z2 = FLOOR((SELECT height FROM "{0}"."{3}" hc' \
-              '             WHERE height IS NOT NULL ' \
+              '             WHERE height IS NOT NULL and not dummy_point' \
+              '                 and st_dwithin(point2, hc.geom, {4})' \
               '             ORDER BY ST_Distance(point2, hc.geom) ' \
               '             LIMIT 1) / {2}) * {2}' \
               'WHERE z2 IS NULL' \
-              .format(cfg.domain.case_schema, cfg.tables.slanted_wall, cfg.domain.dz, cfg.tables.height_corrected)
+              .format(cfg.domain.case_schema, cfg.tables.slanted_wall, cfg.domain.dz,
+                      cfg.tables.height_corrected, cfg.domain.dx * 2.0)
     cur.execute(sqltext)
     sql_debug(connection)
     connection.commit()
 
     sqltext = 'UPDATE "{0}"."{1}" SET ' \
               'z2b = FLOOR((SELECT height_bottom FROM "{0}"."{3}" hc' \
-              '             WHERE height_bottom IS NOT NULL ' \
+              '             WHERE height_bottom IS NOT NULL and not dummy_point' \
+              '                 and st_dwithin(point2, hc.geom, {4})' \
               '             ORDER BY ST_Distance(point2, hc.geom) ' \
               '             LIMIT 1) / {2}) * {2}' \
               'WHERE z2b IS NULL' \
-              .format(cfg.domain.case_schema, cfg.tables.slanted_wall, cfg.domain.dz, cfg.tables.height_corrected)
+              .format(cfg.domain.case_schema, cfg.tables.slanted_wall, cfg.domain.dz,
+                      cfg.tables.height_corrected, cfg.domain.dx * 2.0)
     cur.execute(sqltext)
     sql_debug(connection)
     connection.commit()
@@ -1661,13 +2014,16 @@ def create_slanted_walls(cfg, connection, cur):
     debug('Updating wid')
     sqltext = 'UPDATE "{0}"."{1}" SET ' \
               'wid = (SELECT wid FROM "{0}"."{2}" AS w' \
+              '       where st_dwithin(w.geom, geom3d, {3})' \
               '       ORDER BY ST_Distance(w.geom, geom3d) ' \
               '       LIMIT 1)'\
-              .format(cfg.domain.case_schema, cfg.tables.slanted_wall, cfg.tables.walls)
+              .format(cfg.domain.case_schema, cfg.tables.slanted_wall, cfg.tables.walls, 2.0 * cfg.domain.dx)
     cur.execute(sqltext)
     sql_debug(connection)
     connection.commit()
 
+def create_aux_slanted_wall_height_points(cfg, connection, cur):
+    """"""
     debug('Creating supplementary table {}', cfg.tables.slanted_wall_points)
     sqltext = 'DROP TABLE IF EXISTS "{0}"."{1}";' \
               'CREATE TABLE "{0}"."{1}" AS ' \
@@ -1680,6 +2036,61 @@ def create_slanted_walls(cfg, connection, cur):
     cur.execute(sqltext, (cfg.srid_palm, cfg.srid_palm,))
     sql_debug(connection)
     connection.commit()
+
+
+def slanted_wall_height_modifications(cfg, connection, cur):
+    """ Iteratively modify height in slanted walls and building height near edges """
+
+    create_aux_slanted_wall_height_points(cfg, connection, cur)
+
+    debug('Based on height from wall edges, update near building heights')
+    sqltext = f"""
+        with correct_height_near_edge as (
+            select bh.i, bh.j, sw.z as new_height
+            from {cfg.domain.case_schema}.{cfg.tables.height_corrected} bh
+                join lateral( 
+                    select sw.z 
+                    from {cfg.domain.case_schema}.{cfg.tables.slanted_wall_points}  sw 
+                    where st_dwithin(bh.geom, sw.w_point, {1.44 * np.sqrt(cfg.domain.dx ** 2 + cfg.domain.dy ** 2)})
+                        and sw.z > bh.height
+                        and not bh.dummy_point
+                    order by sw.z desc
+                    limit 1) sw on true
+        )
+        update {cfg.domain.case_schema}.{cfg.tables.height_corrected}  bh
+        set height = ch.new_height
+        from correct_height_near_edge ch
+        where bh.i = ch.i and bh.j = ch.j and not bh.dummy_point
+    """
+    cur.execute(sqltext)
+    sql_debug(connection)
+    connection.commit()
+
+    debug('Adjust dummy point height in building heights')
+    sqltext = f"""
+        with dummy_point_update as (
+        select
+            bh.i, bh.j, swp.height
+        from {cfg.domain.case_schema}.{cfg.tables.height_corrected}  bh
+            join lateral (select z as height
+                          from {cfg.domain.case_schema}.{cfg.tables.slanted_wall_points}  swp
+                          where st_dwithin(swp.w_point, bh.geom, {cfg.domain.dx})
+                          order by st_distance(swp.w_point, bh.geom) asc
+                          limit 1
+                          ) swp on true
+        where bh.dummy_point
+        )
+        update {cfg.domain.case_schema}.{cfg.tables.height_corrected}  bh
+        set height = dpu.height
+        from dummy_point_update dpu
+        where bh.i = dpu.i and bh.j = dpu.j and bh.dummy_point;
+    """
+    cur.execute(sqltext)
+    sql_debug(connection)
+    connection.commit()
+
+    # Now perform filtering, just in case
+    filter_building_heights(cfg, connection, cur)
 
 def create_slated_roof(cfg, connection, cur):
     """ Create slanted roof """
@@ -1708,14 +2119,14 @@ def create_slated_roof(cfg, connection, cur):
     # connection.commit()
 
     # add rest of the roofs
-    sqltext = 'WITH nb AS (SELECT geom FROM "{0}"."{3}")' \
+    sqltext = 'WITH nb AS (SELECT geom FROM "{0}"."{3}" l where l.type between 900 and 999)' \
               'INSERT INTO "{0}"."{1}" AS sr SELECT ' \
               'g.id, g.i, g.j, NULL, g.geom ' \
               'FROM "{0}"."{2}" AS g, nb ' \
-              'WHERE (ST_Intersects(ST_SetSRID(ST_Point(g.xcen,g.ycen), %s), nb.geom) AND ' \
+              'WHERE (ST_Intersects(g.point, nb.geom) AND ' \
               '       g.id NOT IN (SELECT id FROM "{0}"."{1}")) ' \
               .format(cfg.domain.case_schema, cfg.tables.slanted_roof, cfg.tables.grid,
-                      cfg.tables.build_new)
+                      cfg.tables.landcover)
     cur.execute(sqltext, (cfg.srid_palm, ))
     sql_debug(connection)
     connection.commit()
@@ -1860,24 +2271,24 @@ def create_slated_roof(cfg, connection, cur):
     #     connection.commit()
 
     sqltext = 'UPDATE "{0}"."{1}" SET ' \
-              'z1 = (CASE WHEN n_edges >= 1 THEN (SELECT height FROM "{0}"."{2}" hc' \
-              '             WHERE ST_DWithin(p1, hc.geom, {3}) AND height IS NOT NULL ' \
+              'z1 = (CASE WHEN p1 is not null THEN (SELECT height FROM "{0}"."{2}" hc' \
+              '             WHERE ST_DWithin(p1, hc.geom, {3}) AND height IS NOT NULL and not dummy_point ' \
               '             ORDER BY ST_Distance(p1, hc.geom) ' \
               '             LIMIT 1) ELSE NULL END), '\
-              'z2 = (CASE WHEN n_edges >= 2 THEN (SELECT height FROM "{0}"."{2}" hc' \
-              '             WHERE ST_DWithin(p2, hc.geom, {3}) AND height IS NOT NULL ' \
+              'z2 = (CASE WHEN p2 is not null THEN (SELECT height FROM "{0}"."{2}" hc' \
+              '             WHERE ST_DWithin(p2, hc.geom, {3}) AND height IS NOT NULL and not dummy_point' \
               '             ORDER BY ST_Distance(p2, hc.geom) ' \
               '             LIMIT 1) ELSE NULL END), ' \
-              'z3 = (CASE WHEN n_edges >= 3 THEN (SELECT height FROM "{0}"."{2}" hc' \
-              '             WHERE ST_DWithin(p3, hc.geom, {3}) AND height IS NOT NULL ' \
+              'z3 = (CASE WHEN p3 is not null THEN (SELECT height FROM "{0}"."{2}" hc' \
+              '             WHERE ST_DWithin(p3, hc.geom, {3}) AND height IS NOT NULL and not dummy_point ' \
               '             ORDER BY ST_Distance(p3, hc.geom) ' \
               '             LIMIT 1) ELSE NULL END), ' \
-              'z4 = (CASE WHEN n_edges >= 4 THEN (SELECT height FROM "{0}"."{2}" hc' \
-              '             WHERE ST_DWithin(p4, hc.geom, {3}) AND height IS NOT NULL ' \
+              'z4 = (CASE WHEN p4 is not null THEN (SELECT height FROM "{0}"."{2}" hc' \
+              '             WHERE ST_DWithin(p4, hc.geom, {3}) AND height IS NOT NULL and not dummy_point ' \
               '             ORDER BY ST_Distance(p4, hc.geom) ' \
               '             LIMIT 1) ELSE NULL END), ' \
-              'z5 = (CASE WHEN n_edges >= 5 THEN (SELECT height FROM "{0}"."{2}" hc' \
-              '             WHERE ST_DWithin(p5, hc.geom, {3}) AND height IS NOT NULL ' \
+              'z5 = (CASE WHEN p5 is not null THEN (SELECT height FROM "{0}"."{2}" hc' \
+              '             WHERE ST_DWithin(p5, hc.geom, {3}) AND height IS NOT NULL and not dummy_point ' \
               '             ORDER BY ST_Distance(p5, hc.geom) ' \
               '             LIMIT 1) ELSE NULL END)'.\
               format(cfg.domain.case_schema, cfg.tables.slanted_roof, cfg.tables.height_corrected, cfg.slanted_pars.wall_build_height_max_dist)
@@ -1901,35 +2312,54 @@ def create_slated_roof(cfg, connection, cur):
         connection.commit()
 
     # modify height at the roof edge, set to floor(height)
-    # FIXME FLOOR will not work if dz != 1
-    # FIXME optimize using spatial index
+    # -- OPTIMIZE HERE
+    debug('Modification of roof edge height')
     roofs_dist2edge = cfg.slanted_pars.roofs_dist2edge
-    sqltext = 'UPDATE "{0}"."{1}" SET ' \
-              'z1 = CASE WHEN (SELECT ST_Distance(p1, geom) FROM "{0}"."{3}" ORDER BY ST_Distance(p1, geom) LIMIT 1) < {4} THEN FLOOR(z1 / {2}) * {2} ELSE z1 END, '\
-              'z2 = CASE WHEN (SELECT ST_Distance(p2, geom) FROM "{0}"."{3}" ORDER BY ST_Distance(p2, geom) LIMIT 1) < {4} THEN FLOOR(z2 / {2}) * {2} ELSE z2 END, ' \
-              'z3 = CASE WHEN (SELECT ST_Distance(p3, geom) FROM "{0}"."{3}" ORDER BY ST_Distance(p3, geom) LIMIT 1) < {4} THEN FLOOR(z3 / {2}) * {2} ELSE z3 END, ' \
-              'z4 = CASE WHEN (SELECT ST_Distance(p4, geom) FROM "{0}"."{3}" ORDER BY ST_Distance(p4, geom) LIMIT 1) < {4} THEN FLOOR(z4 / {2}) * {2} ELSE z4 END, ' \
-              'z5 = CASE WHEN (SELECT ST_Distance(p5, geom) FROM "{0}"."{3}" ORDER BY ST_Distance(p5, geom) LIMIT 1) < {4} THEN FLOOR(z5 / {2}) * {2} ELSE z5 END '.\
-              format(cfg.domain.case_schema, cfg.tables.slanted_roof, cfg.domain.dz, cfg.tables.walls_outer, roofs_dist2edge)
+    sqltext = """
+            UPDATE "{0}"."{1}" SET
+            z1 = CASE WHEN (SELECT ST_Distance(p1, geom) 
+                            FROM "{0}"."{3}" 
+                            where st_dwithin(p1, geom, 1.2 * {4})
+                            ORDER BY ST_Distance(p1, geom) LIMIT 1) < {4} THEN FLOOR(z1 / {2}) * {2} ELSE z1 END, 
+            z2 = CASE WHEN (SELECT ST_Distance(p2, geom) 
+                            FROM "{0}"."{3}" 
+                            where st_dwithin(p2, geom, 1.2 * {4})
+                            ORDER BY ST_Distance(p2, geom) LIMIT 1) < {4} THEN FLOOR(z2 / {2}) * {2} ELSE z2 END, 
+            z3 = CASE WHEN (SELECT ST_Distance(p3, geom) 
+                            FROM "{0}"."{3}" 
+                            where st_dwithin(p3, geom, 1.2 * {4})
+                            ORDER BY ST_Distance(p3, geom) LIMIT 1) < {4} THEN FLOOR(z3 / {2}) * {2} ELSE z3 END, 
+            z4 = CASE WHEN (SELECT ST_Distance(p4, geom) 
+                            FROM "{0}"."{3}" 
+                            where st_dwithin(p4, geom, 1.2 * {4})
+                            ORDER BY ST_Distance(p4, geom) LIMIT 1) < {4} THEN FLOOR(z4 / {2}) * {2} ELSE z4 END, 
+            z5 = CASE WHEN (SELECT ST_Distance(p5, geom) 
+                            FROM "{0}"."{3}" 
+                            where st_dwithin(p5, geom, 1.2 * {4})
+                            ORDER BY ST_Distance(p5, geom) LIMIT 1) < {4} THEN FLOOR(z5 / {2}) * {2} ELSE z5 END 
+            """.format(cfg.domain.case_schema, cfg.tables.slanted_roof, cfg.domain.dz, cfg.tables.walls_outer, roofs_dist2edge)
     cur.execute(sqltext)
     sql_debug(connection)
     connection.commit()
-    # dist2edge = np.sqrt(2.0 * cfg.domain.dx) * 1.1
+
+
     roofs_dist2edge = cfg.slanted_pars.roofs_dist2edge
     for pi in range(1,6):
         verbose('Correcting point {} height in slanted roof tables', pi)
-        sqltext = 'UPDATE "{0}"."{1}" AS sr SET ' \
-                  'z{4} = (SELECT z FROM "{0}"."{2}" AS sw ' \
-                  '        WHERE ST_DWithin(w_point, p{4}, {3}) ' \
-                  '        ORDER BY p{4} <-> sw.w_point LIMIT 1) ' \
-                  'WHERE (SELECT p{4} <-> sw.w_point  ' \
-                  '       FROM "{0}"."{2}" AS sw ' \
-                  '       WHERE ST_DWithin(w_point, p{4}, {3}) ORDER BY p{4} <-> sw.w_point LIMIT 1 )' \
-                  '       < {3} ' \
-                  'AND (SELECT z FROM "{0}"."{2}" AS sw ' \
-                  '     WHERE ST_DWithin(w_point, p{4}, {3}) ' \
-                  '     ORDER BY p{4} <-> sw.w_point LIMIT 1) > z{4}'\
-                  .format(cfg.domain.case_schema, cfg.tables.slanted_roof, cfg.tables.slanted_wall_points, roofs_dist2edge, pi)
+        sqltext = f"""
+        with found_edges as (
+            select
+                swp.z as new_z,
+                sr.id
+            from "{cfg.domain.case_schema}"."{cfg.tables.slanted_roof}" sr
+                join "{cfg.domain.case_schema}"."{cfg.tables.slanted_wall_points}" swp on 
+                        st_distance(swp.w_point, sr.p{pi}) < 1e-5 and st_dwithin(swp.w_point, sr.p{pi}, 0.2)
+        )
+        update "{cfg.domain.case_schema}"."{cfg.tables.slanted_roof}" sr
+        set z{pi} = new_z
+        from found_edges fe
+        where fe.id = sr.id;
+        """
         cur.execute(sqltext)
         sql_debug(connection)
         connection.commit()
@@ -2012,11 +2442,21 @@ def create_slated_roof(cfg, connection, cur):
     # connection.commit()
 
     debug('Updating rid')
-    # TODO: Add ST_Dwithin
-    sqltext = 'UPDATE "{0}"."{1}" SET ' \
-              'rid = (SELECT rid FROM "{0}"."{2}" AS r' \
+    sqltext = f"""
+        update "{cfg.domain.case_schema}"."{cfg.tables.slanted_roof}"
+        set rid = r.rid 
+        from "{cfg.domain.case_schema}"."{cfg.tables.roofs}" r
+        where st_intersects(r.geom, geom3d)
+    """
+    cur.execute(sqltext)
+    sql_debug(connection)
+    connection.commit()
+
+    sqltext = 'UPDATE "{0}"."{1}"  ' \
+              'set rid = (SELECT rid FROM "{0}"."{2}" AS r' \
               '       ORDER BY ST_Distance(r.geom, geom3d) ' \
-              '       LIMIT 1)'\
+              '       LIMIT 1) '\
+              'where rid is null' \
               .format(cfg.domain.case_schema, cfg.tables.slanted_roof, cfg.tables.roofs)
     cur.execute(sqltext)
     sql_debug(connection)
@@ -2543,6 +2983,7 @@ def create_grid_slanted_terrain(cfg, connection, cur):
                 to_delete.append((rgid,))
 
         debug('Deleting all unwanted rows')
+        # -- OPTIMIZE HERE
         sqltext = 'DELETE FROM "{0}"."{1}" ' \
                   'WHERE rgid = ANY(%s)'.format(cfg.domain.case_schema, cfg.tables.slanted_terrain_gridded)
         cur.execute(sqltext, (to_delete, ))
@@ -2666,7 +3107,7 @@ def create_grid_slanted_roof(cfg, connection, cur):
 
     # CREATE TEMP TABLE, destroy after cycle
     # FIND MAX HEIGHT -> k_max
-    sqltext = 'SELECT MAX(height) FROM "{0}"."{1}"'\
+    sqltext = 'SELECT MAX(height) FROM "{0}"."{1}" where not dummy_point'\
               .format(cfg.domain.case_schema, cfg.tables.height_corrected)
     cur.execute(sqltext)
     z_max = cur.fetchall()
@@ -2998,6 +3439,7 @@ def create_grid_slanted_roof(cfg, connection, cur):
                     to_delete.append((rgid,))
 
             debug('Deleting all unwanted rows')
+            # -- OPTMIZE HERE
             sqltext = 'DELETE FROM "{0}"."{1}" ' \
                       'WHERE rgid = ANY(%s)'.format(cfg.domain.case_schema, cfg.tables.slanted_roof_gridded)
             cur.execute(sqltext, (to_delete, ))
@@ -3208,6 +3650,7 @@ def merge_walls_terrain(cfg, connection, cur):
     # DELETE old ones
     # Remove original faces
     debug('Deleting original faces')
+    # -- OPTIMIZE HERE
     sqltext = 'DELETE FROM "{0}"."{1}" ' \
               'WHERE {2}'.format(cfg.domain.case_schema, cfg.tables.slanted_faces, sqltext_ijk)
     cur.execute(sqltext)
@@ -3548,6 +3991,18 @@ def merge_walls_roofs(cfg, connection, cur):
     verbose('Creating counts')
     count = [x[0] for x in verts]
 
+    # check if count > 8
+    if max(count) > 7:
+        warning('Some error in merging')
+        for ic in range(len(count)):
+            if count[ic] > 7:
+                warning(f'\tproblematic [i,j,k, idx], [{i_all[ic]}, {j_all[ic]}, {k_all[ic]}, {ic}]')
+
+        error('No go for merging')
+        exit(1)
+
+
+
     verbose('Creating x verts')
     x_vert = [x[1] for x in verts]
     x_vert_np = np.empty((len(count), 7), dtype=object)
@@ -3716,6 +4171,7 @@ def merge_walls_roofs(cfg, connection, cur):
         id2del.append((id1 if z1 < z2 else id2,))
 
     debug('Deleting all unwanted rows')
+    # -- OPTIMIZE HERE
     sqltext = 'DELETE FROM "{0}"."{1}" ' \
               'WHERE id = ANY(%s)'.format(cfg.domain.case_schema, cfg.tables.slanted_faces)
     cur.execute(sqltext, (id2del,))
@@ -4106,6 +4562,10 @@ def initialize_slanted_faces(cfg, connection, cur):
     sql_debug(connection)
     connection.commit()
 
+    cur.execute(f""" create index slanted_faces_ji_idx on "{cfg.domain.case_schema}"."{cfg.tables.slanted_faces}" (j,i) """)
+    sql_debug(connection)
+    connection.commit()
+
     if cfg.has_buildings:
         debug('Inserting slanted gridded roof into slanted faces')
         sqltext = 'INSERT INTO "{0}"."{1}" (geom, rid, wid, lid, iswall, isroof, isterr) ' \
@@ -4165,10 +4625,11 @@ def initialize_slanted_faces(cfg, connection, cur):
     connection.commit()
 
     verbose('Delete all wall that are under terr_wall faces')
+    # -- OPTIMIZE HERE
     sqltext = 'WITH ij_terr AS (SELECT i,j,k FROM "{0}"."{1}" WHERE isterr) ' \
               'SELECT s.id ' \
               'FROM "{0}"."{1}" AS s ' \
-              'RIGHT JOIN ij_terr AS ts ON ts.i = s.i AND ts.j = s.j ' \
+              '   RIGHT JOIN ij_terr AS ts ON ts.i = s.i AND ts.j = s.j ' \
               'WHERE iswall AND s.k < ts.k' \
               .format(cfg.domain.case_schema, cfg.tables.slanted_faces)
     cur.execute(sqltext)
@@ -4177,12 +4638,13 @@ def initialize_slanted_faces(cfg, connection, cur):
     connection.commit()
     ids = [x[0] for x in ids]
 
-    sqltext = 'DELETE FROM "{0}"."{1}" ' \
-              'WHERE id IN {2}'\
-              .format(cfg.domain.case_schema, cfg.tables.slanted_faces, tuple(ids))
-    cur.execute(sqltext)
-    sql_debug(connection)
-    connection.commit()
+    if len(ids) > 0:
+        sqltext = 'DELETE FROM "{0}"."{1}" ' \
+                  'WHERE id IN {2}'\
+                  .format(cfg.domain.case_schema, cfg.tables.slanted_faces, tuple(ids))
+        cur.execute(sqltext)
+        sql_debug(connection)
+        connection.commit()
 
 
     # verbose('Deleting duplicates')
@@ -4368,6 +4830,7 @@ def initialize_slanted_faces(cfg, connection, cur):
             to_delete.append((id,))
 
         debug('Deleting all unwanted rows')
+        # -- OPTIMIZE HERE
         sqltext = 'DELETE FROM "{0}"."{1}" ' \
                   'WHERE id = ANY(%s)'.format(cfg.domain.case_schema, cfg.tables.slanted_faces)
         cur.execute(sqltext, (to_delete, ))
@@ -4489,6 +4952,7 @@ def initialize_slanted_faces(cfg, connection, cur):
         id2del.append((id1 if z1 < z2 else id2,))
 
     debug('Deleting all unwanted rows')
+    # -- OPTIMIZE HERE
     sqltext = 'DELETE FROM "{0}"."{1}" ' \
               'WHERE id = ANY(%s)'.format(cfg.domain.case_schema, cfg.tables.slanted_faces)
     cur.execute(sqltext, (id2del,))
@@ -4644,7 +5108,7 @@ def normal_vector_trinagulation(cfg, connection, cur):
     verbose('Correct normal vector, z component for vertical faces')
     sqltext = 'UPDATE "{0}"."{1}" SET ' \
               'normz = 0.0' \
-              'WHERE ABS(normz/area) < 1e-5 AND area > 0.0'\
+              'WHERE ABS(normz/area) < 1e-8 AND area > 0.0'\
               .format(cfg.domain.case_schema, cfg.tables.slanted_faces)
     cur.execute(sqltext)
     sql_debug(connection)
@@ -4776,9 +5240,9 @@ def create_integer_vertices(cfg, connection, cur):
 
         verbose('\tUpdating iline, jline, kline')
         sqltext = 'UPDATE "{0}"."{1}" SET ' \
-                  'iline = CASE WHEN ABS(ST_X(vert{2}) - ii{2} * {3} - {6}) > 1e-6 THEN TRUE ELSE FALSE END, ' \
-                  'jline = CASE WHEN ABS(ST_Y(vert{2}) - jj{2} * {4} - {7}) > 1e-6 THEN TRUE ELSE FALSE END, ' \
-                  'kline = CASE WHEN ABS(ST_Z(vert{2}) - kk{2} * {5}) > 1e-6       THEN TRUE ELSE FALSE END '\
+                  'iline = CASE WHEN ABS(ST_X(vert{2}) - ii{2} * {3} - {6}) > 1e-8 THEN TRUE ELSE FALSE END, ' \
+                  'jline = CASE WHEN ABS(ST_Y(vert{2}) - jj{2} * {4} - {7}) > 1e-8 THEN TRUE ELSE FALSE END, ' \
+                  'kline = CASE WHEN ABS(ST_Z(vert{2}) - kk{2} * {5}) > 1e-8       THEN TRUE ELSE FALSE END '\
                   .format(cfg.domain.case_schema, cfg.tables.slanted_faces, ni,
                           cfg.domain.dx, cfg.domain.dy, cfg.domain.dz,
                           cfg.domain.origin_x, cfg.domain.origin_y)
@@ -5224,7 +5688,7 @@ def check_for_vertex_singularities(cfg, connection, cur):
                     continue
                 air_x, air_y, air_z = False, False, False
                 sol_x, sol_y, sol_z = False, False, False
-                if np.abs(x_vert[idx] - cfg.domain.origin_x - ii[idx] * cfg.domain.dx) > 1.0e-6 and norm_temp[2] != 0:
+                if np.abs(x_vert[idx] - cfg.domain.origin_x - ii[idx] * cfg.domain.dx) > 1.0e-8 and norm_temp[2] != 0:
                     # lies on i-line, select which corner and look if air or solid -> create direction
                     if norm_temp[2] < 0:
                         air_x = adj_corners[cidx, 2] * cfg.domain.dx < x_vert[idx] - cfg.domain.origin_x
@@ -5236,7 +5700,7 @@ def check_for_vertex_singularities(cfg, connection, cur):
                     air_y = sol_y = adj_corners[cidx, 1] * cfg.domain.dy == y_vert[idx] - cfg.domain.origin_y
                     air_z = sol_z = adj_corners[cidx, 0] * cfg.domain.dz == z_vert[idx]
 
-                elif np.abs(y_vert[idx] - cfg.domain.origin_y - jj[idx] * cfg.domain.dy) > 1.0e-6 and norm_temp[1] != 0:
+                elif np.abs(y_vert[idx] - cfg.domain.origin_y - jj[idx] * cfg.domain.dy) > 1.0e-8 and norm_temp[1] != 0:
                     # lies on j-line, select which corner and look if air or solid -> create direction
                     if norm_temp[1] < 0:
                         air_y = adj_corners[cidx, 1] * cfg.domain.dy < y_vert[idx] - cfg.domain.origin_y
@@ -5247,7 +5711,7 @@ def check_for_vertex_singularities(cfg, connection, cur):
                     air_x = sol_x = adj_corners[cidx, 2] * cfg.domain.dx == x_vert[idx] - cfg.domain.origin_x
                     air_z = sol_z = adj_corners[cidx, 0] * cfg.domain.dz == z_vert[idx]
 
-                elif np.abs(z_vert[idx] - kk[idx] * cfg.domain.dz) > 1.0e-6 and norm_temp[0] != 0:
+                elif np.abs(z_vert[idx] - kk[idx] * cfg.domain.dz) > 1.0e-8 and norm_temp[0] != 0:
                     # lies on k-line, select which corner and look if air or solid -> create direction
                     if norm_temp[0] < 0:
                         air_z = adj_corners[cidx, 0] * cfg.domain.dz < z_vert[idx]
@@ -5310,7 +5774,7 @@ def check_for_vertex_singularities(cfg, connection, cur):
                 z_vert_new[ivert] = z_vert[idx]
 
                 if 1==1: #dirs[idx] == 6:
-                    if np.abs(x_vert[idx] - cfg.domain.origin_x - ii[idx] * cfg.domain.dx) > 1.0e-6:
+                    if np.abs(x_vert[idx] - cfg.domain.origin_x - ii[idx] * cfg.domain.dx) > 1.0e-8:
                         # lies on i-line, select which corner and look if air or solid -> create direction
                         f1 = False # index if corner was found
                         for cidx in range(8):
@@ -5350,7 +5814,7 @@ def check_for_vertex_singularities(cfg, connection, cur):
                             dir_new[ivert] = 4
                         else:
                             dir_new[ivert] = 5
-                    elif np.abs(y_vert[idx] - cfg.domain.origin_y - jj[idx] * cfg.domain.dy) > 1.0e-6:
+                    elif np.abs(y_vert[idx] - cfg.domain.origin_y - jj[idx] * cfg.domain.dy) > 1.0e-8:
                         # lies on j-line, select which corner and look if air or solid -> create direction
                         f1 = False
                         for cidx in range(8):
@@ -5390,7 +5854,7 @@ def check_for_vertex_singularities(cfg, connection, cur):
                             dir_new[ivert] = 2
                         else:
                             dir_new[ivert] = 3
-                    elif z_vert[idx] - kk[idx] * cfg.domain.dz > 1.0e-6:
+                    elif z_vert[idx] - kk[idx] * cfg.domain.dz > 1.0e-8:
                         # lies on k-line, select which corner and look if air or solid -> create direction
                         for cidx in range(8):
                             if (ii[idx] == adj_corners[cidx, 2]) & (jj[idx] == adj_corners[cidx, 1]) & (kk[idx] == adj_corners[cidx, 0]):
@@ -5531,6 +5995,7 @@ def check_for_vertex_singularities(cfg, connection, cur):
                           x_vert_new[6], y_vert_new[6], z_vert_new[6], cfg.srid_palm, ))
 
     debug('Deleting all unwanted rows')
+    # -- OPTIMIZE HERE
     sqltext = 'DELETE FROM "{0}"."{1}" ' \
               'WHERE id = ANY(%s)'.format(cfg.domain.case_schema, cfg.tables.slanted_faces)
     cur.execute(sqltext, (to_delete,))
@@ -5928,19 +6393,20 @@ def slanted_surface_init(cfg, connection, cur):
     connection.commit()
 
     # TODO: remove faces that are "under" terrain, there are walls that did not merge with terrain, PALM should take care of them
-    sqltext = 'DELETE FROM "{0}"."{1}" ' \
-              'WHERE iswall AND (' \
-              '                  ST_Z(vert1) = 0 OR ' \
-              '                  ST_Z(vert2) = 0 OR ' \
-              '                  ST_Z(vert3) = 0 OR ' \
-              '                  ST_Z(vert4) = 0 OR' \
-              '                  ST_Z(vert5) = 0 OR' \
-              '                  ST_Z(vert6) = 0 OR' \
-              '                  ST_Z(vert7) = 0' \
-              ')'.format(cfg.domain.case_schema, cfg.tables.slanted_faces)
-    cur.execute(sqltext)
-    sql_debug(connection)
-    connection.commit()
+    if cfg.domain.oro_min - cfg.domain.origin_z > 0:
+        sqltext = 'DELETE FROM "{0}"."{1}" ' \
+                  'WHERE iswall AND (' \
+                  '                  ST_Z(vert1) = 0 OR ' \
+                  '                  ST_Z(vert2) = 0 OR ' \
+                  '                  ST_Z(vert3) = 0 OR ' \
+                  '                  ST_Z(vert4) = 0 OR' \
+                  '                  ST_Z(vert5) = 0 OR' \
+                  '                  ST_Z(vert6) = 0 OR' \
+                  '                  ST_Z(vert7) = 0' \
+                  ')'.format(cfg.domain.case_schema, cfg.tables.slanted_faces)
+        cur.execute(sqltext)
+        sql_debug(connection)
+        connection.commit()
 
     # calculate normal vector using triangulation
     normal_vector_trinagulation(cfg, connection, cur)
@@ -6218,31 +6684,34 @@ def slanted_write_nc(ncfile, cfg, connection, cur):
 
     debug('Selecting k,j,i and offk, offj, offi from slanted faces into static driver')
     if cfg.has_buildings:
+        # TODO: finish same as isterr with landcover join and index on tiles and raster tile add, .....
         sqltext = 'SELECT * FROM ( ' \
                   '    SELECT gg.nz AS koff, gg.j AS joff, gg.i AS ioff, ' \
-                  '           s.k AS k,     s.j AS j,     s.i AS i ' \
+                  '           s.k AS k,     s.j AS j,     s.i AS i, 1 ' \
                   '    FROM "{0}"."{1}" AS s ' \
-                  '    JOIN LATERAL (SELECT i,j,nz FROM "{0}"."{2}" AS g ' \
-                  '                  WHERE s.lid = g.lid AND ST_DWithin(g.geom, s.center, {5}) ' \
-                  '                  ORDER BY ST_Distance(g.geom, s.center) ' \
-                  '                  LIMIT 1) AS gg ON TRUE ' \
+                  '        join "{0}"."{3}" ls on ls.lid = s.lid ' \
+                  '        JOIN LATERAL (SELECT i,j,nz FROM "{0}"."{2}" AS g ' \
+                  '                              join "{0}"."{3}" l on l.lid = g.lid ' \
+                  '                           WHERE abs(l.type - ls.type) < 50 AND ST_DWithin(s.center, g.geom, {5}) ' \
+                  '                           ORDER BY ST_Distance(g.geom, s.center) ' \
+                  '                           LIMIT 1) AS gg ON TRUE ' \
                   '	   WHERE isterr ' \
                   '    UNION ALL' \
                   '    SELECT bb.k AS koff, bb.j AS joff, bb.i AS ioff, ' \
-                  '           s.k AS k,     s.j AS j,     s.i AS i ' \
+                  '           s.k AS k,     s.j AS j,     s.i AS i, 2 ' \
                   '           FROM "{0}"."{1}" AS s ' \
                   '           JOIN LATERAL (SELECT i,j,k FROM "{0}"."{4}" AS b ' \
-                  '                         WHERE ST_DWithin(b.geom, s.center, {5}) ' \
-                  '                         ORDER BY ST_Distance(b.geom, s.center) ' \
+                  '                         WHERE ST_DWithin(s.center, b.geom, {5}) ' \
+                  '                         ORDER BY ST_Distance(s.center, b.geom) ' \
                   '                         LIMIT 1 ' \
                   '                         ) AS bb ON TRUE ' \
                   '    WHERE iswall' \
                   '    UNION ALL' \
                   '    SELECT bb.k AS koff, bb.j AS joff, bb.i AS ioff, ' \
-                  '           s.k AS k,     s.j AS j,     s.i AS i ' \
+                  '           s.k AS k,     s.j AS j,     s.i AS i, 3 ' \
                   '           FROM "{0}"."{1}" AS s ' \
                   '           JOIN LATERAL (SELECT i,j,k FROM "{0}"."{4}" AS b ' \
-                  '                         WHERE ST_DWithin(b.geom, s.center, {5}) ' \
+                  '                         WHERE ST_DWithin(s.center, b.geom, {5}) ' \
                   '                         ORDER BY ST_Distance(b.geom, s.geom) ' \
                   '                         LIMIT 1 ' \
                   '                         ) AS bb ON TRUE ' \
@@ -6254,7 +6723,7 @@ def slanted_write_nc(ncfile, cfg, connection, cur):
     else:
         sqltext = 'SELECT * FROM ( ' \
                   '    SELECT gg.nz AS koff, gg.j AS joff, gg.i AS ioff, ' \
-                  '           s.k AS k,     s.j AS j,     s.i AS i ' \
+                  '           s.k AS k,     s.j AS j,     s.i AS i' \
                   '    FROM "{0}"."{1}" AS s ' \
                   '    JOIN LATERAL (SELECT i, j, nz FROM "{0}"."{2}" AS g ' \
                   '                  WHERE s.lid = g.lid AND ST_DWithin(g.geom, s.center, {4}) ' \
