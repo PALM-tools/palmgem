@@ -263,6 +263,7 @@ def create_slurb_vars(ncfile, cfg, connection, cur):
         g.xcen,
         g.ycen,
         g.geom, 
+        g.point,
         0.0 as building_plan_area_fraction,
         0.0 as urban_fraction,
         273.15 as deep_soil_temperature,
@@ -361,6 +362,7 @@ def create_slurb_vars(ncfile, cfg, connection, cur):
         set building_height = gh.height
         from grid_height gh
         where gh.id = gs.id
+            and gh.height is not null
         """.format(cfg.domain.case_schema, cfg.tables.grid_slurb, cfg.tables.buildings_height)
         cur.execute(sqltext, (cfg.srid_palm,))
         sql_debug(connection)

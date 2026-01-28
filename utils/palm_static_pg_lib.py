@@ -124,7 +124,7 @@ def topo_fill_labeled(cfg, connection, cur):
 
     sql_create = f"""
         drop table if exists nz_temp_labelled;
-        create table nz_temp_labelled
+        create temp table nz_temp_labelled
         (grid_id bigint, label bigint, nz int)"""
     cur.execute(sql_create)
 
@@ -141,14 +141,6 @@ def topo_fill_labeled(cfg, connection, cur):
         extra_verbose('uploading batch {} / {}', ib + 1, batches.size-1)
         cur.executemany(sql_insert, to_insert[batches[ib]:batches[ib + 1]])
         connection.commit()
-
-    # cur.execute('create table milano_10m.nz_temp_labelled as select * from nz_temp_labelled')
-    # connection.commit()
-    #
-    # cur.execute('create table milano_10m.nz_temp as select * from nz_temp')
-    # connection.commit()
-
-
 
     debug('Find valid groups to fill')
     sqltext = f"""
@@ -537,6 +529,8 @@ def retile_raster(cfg, connection, cur, rtable):
             rast RASTER
         );
         
+        alter table "{cfg.domain.case_schema}"."{rtable}_retile" owner to {cfg.pg_owner};
+        
         -- (Optional but recommended) Add an SRID constraint for the new table
         ALTER TABLE "{cfg.domain.case_schema}"."{rtable}_retile" ADD CONSTRAINT enforce_srid_rast CHECK (ST_SRID(rast) = %s); -- Use cfg.srid_palm here
         
@@ -597,6 +591,9 @@ def copy_vectors_from_input(grid_ext, cfg, connection, cur):
         sqltext = 'create table "{}"."{}" (like "{}"."{}" including all)' \
             .format(cfg.domain.case_schema, rel, cfg.input_schema, rel)
         cur.execute(sqltext)
+        sqltext = 'alter table "{}"."{}" owner to {}' \
+            .format(cfg.domain.case_schema, rel, cfg.pg_owner)
+        cur.execute(sqltext)
         # check if table is empty or not
         cur.execute('SELECT COUNT(*) FROM "{}"."{}"'.format(cfg.input_schema, rel))
         count = cur.fetchone()[0]
@@ -637,17 +634,27 @@ def copy_vectors_from_input(grid_ext, cfg, connection, cur):
                 .format(cfg.domain.case_schema, rel, srid_rel)
             cur.execute(sqltext, (cfg.srid_palm, grid_ext,))
 
-            sqltext = 'insert into "{0}"."{1}" ({4}, geom) select {4}, (ST_Dump(geom)).geom::geometry(Polygon,{3})' \
+            sqltext = 'insert into "{0}"."{1}" ({4}, geom) select {4}, st_transform((ST_Dump(geom)).geom::geometry(Polygon,{3}), %s) ' \
                       ' from "{2}"."{1}" where ST_Intersects(ST_Transform(geom, %s), %s)' \
                 .format(cfg.domain.case_schema, rel, cfg.input_schema, srid_rel, ','.join(columns_list))
-            cur.execute(sqltext, (cfg.srid_palm, grid_ext,))
+            cur.execute(sqltext, (cfg.srid_palm, cfg.srid_palm, grid_ext,))
+
+            sqltext = 'select UpdateGeometrySRID(%s, %s, %s, %s)'
+            cur.execute(sqltext, (cfg.domain.case_schema, rel, 'geom', cfg.srid_palm,))
 
         else:
             sqltext = 'insert into "{}"."{}" select * from "{}"."{}" where ST_Intersects(ST_Transform(geom, %s), %s)' \
                 .format(cfg.domain.case_schema, rel, cfg.input_schema, rel)
             cur.execute(sqltext, (cfg.srid_palm, grid_ext,))
-            sqltext = 'select UpdateGeometrySRID(%s, %s, %s, %s)'
-            cur.execute(sqltext, (cfg.domain.case_schema, rel, 'geom', cfg.srid_palm,))
+            # sqltext = f'update "{cfg.domain.case_schema}"."{rel}" set geom = st_transform(geom, {cfg.srid_palm});'
+            sqltext = (f'ALTER TABLE "{cfg.domain.case_schema}"."{rel}" '
+                       f'ALTER COLUMN geom TYPE geometry(GEOMETRY, {cfg.srid_palm}) USING ST_Transform(geom, {cfg.srid_palm}) ;')
+            #
+            cur.execute(sqltext)
+
+
+            # sqltext = 'select UpdateGeometrySRID(%s, %s, %s, %s)'
+            # cur.execute(sqltext, (cfg.domain.case_schema, rel, 'geom', cfg.srid_palm,))
 
         # Check geometries and make them valid
         # if rel == 'landcover':
@@ -785,7 +792,7 @@ def copy_rasters_from_input(grid_ext, cfg, connection, cur):
             sqltext = 'select UpdateRasterSRID(%s, %s, %s, %s)'
             cur.execute(sqltext, (cfg.input_schema, rel, 'rast', cfg.srid_input,))
         # transform and clip the raster layer
-        if not srid_rel == cfg.srid_input:
+        if not srid_rel == cfg.srid_palm:
             sqltext = f"""
                 with raster_transform as (
                     select ST_Transform(t.rast, %s) rast
@@ -1102,9 +1109,9 @@ def connect_landcover_grid(cfg, connection, cur):
                 l.lid
             from "{cfg.domain.case_schema}"."{cfg.tables.grid}" g
                 join lateral (select l.lid 
-                             from "{cfg.domain.case_schema}"."{cfg.tables.landcover}" l
-                             where st_intersects(g.point, l.geom)
-                             limit 1) l on true
+                              from "{cfg.domain.case_schema}"."{cfg.tables.landcover}" l
+                              where st_intersects(g.point, l.geom)
+                              limit 1) l on true
         ;
         create index lid_grid_gid_idx on lid_grid(id);
         
@@ -1143,14 +1150,19 @@ def connect_landcover_grid(cfg, connection, cur):
         # Process building only with coverage > default
         debug('Calculate building fraction')
         sqltext = f"""
-            create temp table building2drop as 
-            select g.id
+        drop table if exists building2drop;
+        create temp table building2drop as 
+            select 
+                g.id,
+                SUM(ST_Area(ST_Intersection(g.geom, l.geom))) / {cfg.domain.dx * cfg.domain.dy} AS sum_area
             from "{cfg.domain.case_schema}"."{cfg.tables.grid}" g
-                join "{cfg.domain.case_schema}"."{cfg.tables.landcover}" l on l.lid = g.lid
-            where l.type between {cfg.type_range.building_min} and {cfg.type_range.building_max}
-            group by g.id
-            having SUM(ST_Area(ST_Intersection(g.geom, l.geom))) / {cfg.domain.dx * cfg.domain.dy} < {cfg.min_plan_area}
-            ;
+                join "{cfg.domain.case_schema}"."{cfg.tables.landcover}" lg on lg.lid = g.lid
+               JOIN "{cfg.domain.case_schema}"."{cfg.tables.landcover}" l ON ST_Intersects(l.geom, g.geom)
+            WHERE l.type BETWEEN {cfg.type_range.building_min} AND {cfg.type_range.building_max}
+                and lg.type between {cfg.type_range.building_min} and {cfg.type_range.building_max}
+            GROUP BY g.id;
+            
+        create index buildings2drop_idx on building2drop(id);
         """
         cur.execute(sqltext)
         sql_debug(connection)
@@ -1162,7 +1174,7 @@ def connect_landcover_grid(cfg, connection, cur):
         set lid = (select l.lid from "{cfg.domain.case_schema}"."{cfg.tables.landcover}" l 
                      where not l.type between {cfg.type_range.building_min} and {cfg.type_range.building_max}
                      order by ST_Distance(l.geom, g.point) limit 1)
-        where id in (select id from building2drop)
+        where id in (select id from building2drop where sum_area < {cfg.min_plan_area} )
         """
         cur.execute(sqltext, (cfg.srid_palm,))
         sql_debug(connection)
@@ -1199,9 +1211,11 @@ def connect_landcover_grid(cfg, connection, cur):
         sqltext = (('UPDATE "{0}"."{1}" g SET '
                     'veg_fraction = s.sum_area '
                     'FROM ( '
-                    '       SELECT g.id AS gid, SUM(ST_Area(ST_Intersection(g.geom, l.geom))) / {5} AS sum_area '
+                    '       SELECT '
+                    '           g.id AS gid, '
+                    '           SUM(ST_Area(ST_Intersection(g.geom, l.geom))) / {5} AS sum_area '
                     '       FROM "{0}"."{1}" g'
-                    '       JOIN "{0}"."{2}" l ON ST_Intersects(l.geom, g.geom) '
+                    '           JOIN "{0}"."{2}" l ON ST_Intersects(l.geom, g.geom) '
                     '       WHERE l.type BETWEEN {3} AND {4} '
                     '       GROUP BY g.id '
                     ') AS s '
