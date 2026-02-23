@@ -8,3 +8,6 @@ The interactive visualization of GIS inputs, processed static driver grid and pa
 
 # PALM static driver visualization
 For visualization of classical netCDF4 static driver use standard tools for viewing netCDF4 files (such as ncview, Panoply).
+
+# PALM Prepared LOD Tutorials
+Please see [Tutorials](../examples/tutorials/tutorials.md) for more info. 
