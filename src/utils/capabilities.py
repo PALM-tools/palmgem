@@ -1,0 +1,204 @@
+from src.logger import progress, debug
+
+
+def _table_exists(db, schema, table):
+    return bool(db.fetchone(
+        "select exists(select 1 from information_schema.tables "
+        "where table_schema = %s and table_name = %s)",
+        (schema, table)))
+
+
+def _column_exists(db, schema, table, column):
+    return bool(db.fetchone(
+        "select exists(select 1 from information_schema.columns "
+        "where table_schema = %s and table_name = %s and column_name = %s)",
+        (schema, table, column)))
+
+
+def ensure_capability_flags(cfg, db):
+    """Make the derived capability flags available without re-running initialize_domain.
+
+    ``has_buildings`` / ``has_3d_buildings`` / ``has_surface_params`` / ``lod2`` are
+    normally set in memory by :class:`InitializeDomainTask`. When a NetCDF or CCT
+    task runs on its own (staged execution: a separate process that only emits the
+    driver) those flags are absent, and reading them would raise ``AttributeError``.
+    This reconstructs them from the persisted ``case_schema`` so the task can run
+    independently of the process that built the domain.
+
+    Only flags that are *missing* are filled, so a full single-process run — where
+    ``initialize_domain`` already set them, including config-driven adjustments such
+    as ``force_lsm_only`` — is left exactly as-is.
+    """
+    needed = ['has_buildings', 'has_3d_buildings', 'has_surface_params', 'lod2', 'has_trees']
+    if all(key in cfg._settings for key in needed):
+        return
+
+    schema = cfg.domain.case_schema
+    progress('deriving capability flags from existing schema "{}" (staged run)', schema)
+
+    # surface params: copied table present + catland column on the landcover table
+    has_surface_params = (
+        _table_exists(db, schema, cfg.tables.surface_params)
+        and _column_exists(db, schema, cfg.tables.landcover, 'catland')
+    )
+
+    # buildings present: a buildings height raster, or building-type rows in landcover
+    has_buildings = _table_exists(db, schema, cfg.tables.buildings_height)
+    if not has_buildings and _table_exists(db, schema, cfg.tables.landcover):
+        count = db.fetchone(
+            f'select count(*) from "{schema}"."{cfg.tables.landcover}" '
+            f'where type between %s and %s',
+            (cfg.type_range.building_min, cfg.type_range.building_max))
+        has_buildings = bool(count and count > 0)
+
+    # 3d buildings: both the extras vector and extras raster were copied to the case
+    has_3d_buildings = (
+        _table_exists(db, schema, cfg.tables.extras_shp)
+        and _table_exists(db, schema, cfg.tables.extras)
+    )
+
+    # lod2: surface params + roof/wall geometry present, unless surface fractions win
+    lod2 = (
+        has_surface_params
+        and _table_exists(db, schema, cfg.tables.roofs)
+        and _table_exists(db, schema, cfg.tables.walls)
+    )
+    if cfg.landcover.surface_fractions and lod2:
+        lod2 = False
+
+    # trees present: the trees vector was copied to the case schema
+    has_trees = _table_exists(db, schema, cfg.tables.trees)
+
+    for key, value in {
+        'has_buildings': has_buildings,
+        'has_3d_buildings': has_3d_buildings,
+        'has_surface_params': has_surface_params,
+        'lod2': lod2,
+        'has_trees': has_trees,
+    }.items():
+        if key not in cfg._settings:
+            cfg.update_setting(key, value)
+            debug('derived capability flag {} = {}', key, value)
+
+
+def build_impervious_correction(cfg, db, has_impervious):
+    """(Re)create the session temp table ``impervious_correction``: grid cells
+    typed 202 (sealed) whose imperviousness raster value is <= 50 % become
+    vegetation type 3. Without an impervious raster the table is empty.
+
+    The static driver joins this table in write_pavements/write_vegetation.
+    It is a temp table, so it exists only in the session that created it.
+    """
+    schema = cfg.domain.case_schema
+    if has_impervious:
+        query = f"""
+            drop table if exists impervious_correction;
+            create temp table impervious_correction as
+            select
+                g.id,
+                3 as new_type
+            from "{schema}"."{cfg.tables.grid}" g
+                join "{schema}"."{cfg.tables.landcover}" l on l.lid = g.lid
+                join lateral (
+                    select st_nearestvalue(rast, g.point) as impervious_value
+                    from "{schema}"."{cfg.tables.impervious}"
+                    where st_intersects(tile_extent, g.point)
+                    limit 1
+                ) r on true
+            where l.type = 202
+                and r.impervious_value <= 50;
+        """
+    else:
+        query = """
+            drop table if exists impervious_correction;
+            create temp table impervious_correction as
+            select
+                -999999 as id,
+                103 as new_type
+            limit 0;
+        """
+    db.execute(query)
+
+
+def ensure_impervious_correction(cfg, db):
+    """Recreate ``impervious_correction`` when a driver runs in a separate
+    process from initialize_domain (staged run): the temp table is gone with
+    the old session, and the static driver's vegetation/pavement queries
+    would fail with UndefinedTable. A same-process run keeps its table."""
+    if db.fetchone("select to_regclass('pg_temp.impervious_correction') is not null"):
+        return
+    has_impervious = _table_exists(db, cfg.domain.case_schema, cfg.tables.impervious)
+    progress('recreating impervious_correction from schema "{}" (staged run; '
+             'impervious raster {})', cfg.domain.case_schema,
+             'present' if has_impervious else 'absent')
+    build_impervious_correction(cfg, db, has_impervious)
+
+
+def ensure_slurb_inputs(cfg, db):
+    """Fail fast, before any file is written, when the SLURB input tables are
+    unusable.
+
+    ``slurb_driver`` unconditionally joins the ``centerline`` and
+    ``building_area`` tables in the case schema. ``prepare_slurb`` builds them
+    in the *input* schema and ``initialize_domain`` copies them over (skipping
+    missing or empty ones, and any re-run drops and rebuilds the whole case
+    schema). When they end up missing or empty the driver would otherwise
+    crash deep inside SQL with an opaque UndefinedTable error, or silently
+    emit a driver with no canyon geometry at all.
+    """
+    schema = cfg.domain.case_schema
+    problems = []
+    for table in (cfg.tables.centerline, cfg.tables.building_area):
+        if not _table_exists(db, schema, table):
+            problems.append(f'table "{schema}"."{table}" does not exist')
+            continue
+        count = db.fetchone(f'select count(*) from "{schema}"."{table}"')
+        if not count:
+            problems.append(f'table "{schema}"."{table}" is empty')
+
+    if problems:
+        raise RuntimeError(
+            'slurb_driver inputs are not usable: ' + '; '.join(problems) + '. '
+            'Run prepare_slurb (after gis_import) to build them in the input '
+            'schema, then initialize_domain to copy them into the case schema.')
+
+
+def ensure_domain_geometry(cfg, db):
+    """Make the derived vertical domain geometry available without re-running
+    initialize_domain.
+
+    ``calculate_origin_z_oro_min`` sets ``cfg.domain.oro_min`` (and ``origin_z``
+    when it is the ``-1`` "auto" sentinel) in memory during initialize_domain.
+    The driver tasks read ``cfg.domain.oro_min``/``origin_z``; when a driver runs
+    on its own (staged execution) those are absent and reading them raises
+    ``AttributeError``. This reconstructs them from the persisted grid the same
+    way initialize_domain did — ``oro_min`` is the minimum cell ``height`` — so
+    the task can run independently of the process that built the domain.
+
+    Only fills what is missing: a full single-process run, where
+    initialize_domain already set ``oro_min``, is left exactly as-is.
+    """
+    if 'oro_min' in cfg.domain._settings:
+        return
+
+    origin_z = getattr(cfg.domain, 'origin_z', -1)
+
+    if origin_z == -1:
+        # auto origin: mirror initialize_domain — pull min height from the case
+        # schema (or the parent domain when nesting).
+        source_schema = cfg.domain.case_schema
+        if getattr(cfg.domain, 'parent_domain_schema', '') != '':
+            source_schema = cfg.domain.parent_domain_schema
+
+        min_height = db.fetchone(
+            f'select min(height) from "{source_schema}"."{cfg.tables.grid}"')
+        min_height = min_height if min_height is not None else 0.0
+
+        progress('deriving origin_z/oro_min from grid "{}" (staged run) = {}',
+                 source_schema, min_height)
+        cfg.domain.update_setting('origin_z', min_height)
+        cfg.domain.update_setting('oro_min', min_height)
+    else:
+        # predefined origin: oro_min follows it
+        cfg.domain.update_setting('oro_min', origin_z)
+        debug('derived oro_min from configured origin_z = {}', origin_z)

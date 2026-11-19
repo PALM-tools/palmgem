@@ -1,0 +1,406 @@
+import pandas as pd
+import geopandas as gpd
+from shapely import wkb
+from centerline.geometry import Centerline
+from .base import BaseTask
+from src.logger import debug, progress, verbose, warning, error, sql_debug, sql_verbose
+
+
+class PrepareSlurbInputs(BaseTask):
+    def run(self):
+        self.check_required_inputs()
+        self.create_centerlines()
+        self.process_centerlines()
+        self.calculate_canyon_geometry()
+        self.calculate_centerline_results()
+        self.calculate_building_front_area()
+        self.cleanup()
+
+    def check_required_inputs(self):
+        """Hard-fail before any processing when the input schema cannot yield
+        usable SLURB inputs. Every step below needs building-type landcover
+        polygons and the buildings height raster; without them the task would
+        otherwise finish "successfully" with empty centerline/building_area
+        tables and the failure only surfaces much later in slurb_driver.
+        """
+        schema = self.cfg.input_schema
+
+        sql_exists = """
+            select exists(
+                select * from information_schema.tables
+                where table_schema = %s and table_name = %s
+            )
+        """
+        for table in (self.cfg.tables.landcover, self.cfg.tables.buildings_height):
+            if not self.fetchone(sql_exists, (schema, table)):
+                msg = (f'table "{schema}"."{table}" not found; '
+                       'import it (gis_import) before running prepare_slurb')
+                error(msg)
+                raise ValueError(msg)
+
+        sql_buildings = f"""
+            select count(*) from "{schema}"."{self.cfg.tables.landcover}"
+            where type between {self.cfg.type_range.building_min} and {self.cfg.type_range.building_max}
+        """
+        if not self.fetchone(sql_buildings):
+            msg = (f'no building-type polygons (type {self.cfg.type_range.building_min}-'
+                   f'{self.cfg.type_range.building_max}) found in "{schema}"."{self.cfg.tables.landcover}"; '
+                   'prepare_slurb needs building footprints in the landcover to compute canyon '
+                   'geometry and building areas. Merge building polygons into the landcover '
+                   'before running prepare_slurb.')
+            error(msg)
+            raise ValueError(msg)
+
+        # create_centerlines labels the new centerlines with cfg.srid (the
+        # coordinates come from the landcover, but the SRID is lost on the way
+        # through shapely). A landcover in another SRID would give centerlines
+        # with the right coordinates but the wrong SRID, and the canyon step
+        # fails much later with "Operation on mixed SRID geometries".
+        sql_srid = f'select st_srid(geom) from "{schema}"."{self.cfg.tables.landcover}" limit 1'
+        srid_landcover = self.fetchone(sql_srid)
+        if srid_landcover != self.cfg.srid:
+            msg = (f'"{schema}"."{self.cfg.tables.landcover}" is in EPSG:{srid_landcover} but the '
+                   f'configured srid is {self.cfg.srid}; set srid, srid_input, srid_palm and '
+                   f'srid_utm in the config to the srid of the input data (e.g. {srid_landcover})')
+            error(msg)
+            raise ValueError(msg)
+
+    def _clip_box(self):
+        """SQL expression of the processing box (domain + slurb_clip_margin)
+        in the landcover srid, or None to process the whole input schema."""
+        margin = float(self.cfg.get('slurb_clip_margin', 0.0) or 0.0)
+        if margin <= 0:
+            return None
+        d = self.cfg.domain
+        x0, y0 = float(d.origin_x) - margin, float(d.origin_y) - margin
+        x1 = float(d.origin_x) + d.nx * d.dx + margin
+        y1 = float(d.origin_y) + d.ny * d.dy + margin
+        return (f'st_transform(st_makeenvelope({x0}, {y0}, {x1}, {y1}, {int(self.cfg.srid_palm)}), '
+                f'{int(self.cfg.srid)})')
+
+    def create_centerlines(self):
+        progress('creating centerline from landcover')
+
+        # ensure fresh start
+        self.execute(f'drop table if exists "{self.cfg.input_schema}"."{self.cfg.tables.centerline}"')
+
+        debug('reading landcover parcels from database')
+        box = self._clip_box()
+        if box is None:
+            sql = f"""
+                select geom as geom from "{self.cfg.input_schema}"."{self.cfg.tables.landcover}"
+                where type in (201,202,203)
+            """
+        else:
+            # the street network is often one huge polygon, so the parcels are
+            # cut to the box rather than selected whole; the centre line is
+            # distorted only next to the cut, slurb_clip_margin away from the
+            # domain
+            progress('prepare_slurb limited to the domain + {} m (slurb_clip_margin)',
+                     self.cfg.slurb_clip_margin)
+            sql = f"""
+                select geom from (
+                    select st_collectionextract(st_intersection(geom, {box}), 3) as geom
+                    from "{self.cfg.input_schema}"."{self.cfg.tables.landcover}"
+                    where type in (201,202,203) and st_intersects(geom, {box})
+                ) s where not st_isempty(geom)
+            """
+        parcels = pd.read_sql(sql, self.db.engine)
+        # Check if there are some parcels, return error and end session
+        if parcels.empty:
+            error('no landcover parcels found. check that the landcover table is populated and contains type 202 parcels.')
+            raise ValueError('no landcover parcels found. check that the landcover table is populated and contains type 202 parcels.')
+
+
+        # wkb.loads handles a single geometry, not a Series — decode element-wise
+        debug('creating centerline from landcover')
+        parcels.geom = parcels.geom.apply(lambda g: wkb.loads(g, hex=True))
+
+        interpolation = float(self.cfg.get('slurb_centerline_interpolation', 0.5))
+        centerlines = []
+        for index, row in parcels.iterrows():
+            try:
+                c_line = Centerline(row['geom'], interpolation_distance=interpolation)
+                centerlines.append(c_line.geometry)
+            except Exception as e:
+                verbose(f"skipping parcel {index} due to geometry error: {e}")
+
+        debug('uploading centerline to postgis')
+        gdf = gpd.GeoDataFrame(geometry=centerlines)
+        gdf = gdf.set_crs(f"EPSG:{self.cfg.srid}")
+        gdf.to_postgis(
+            name=self.cfg.tables.centerline,
+            schema=self.cfg.input_schema,
+            con=self.db.engine,
+            index=False
+        )
+
+    def process_centerlines(self):
+        progress('processing and simplifying centerline')
+
+        # simplify and merge
+        sql_simplify = f"""
+            drop table if exists "{self.cfg.input_schema}"."{self.cfg.tables.centerline_simplified}";
+            create table "{self.cfg.input_schema}"."{self.cfg.tables.centerline_simplified}" as
+            select
+                geometry as geom_original,
+                st_simplify(st_linemerge(geometry), 0.5) as geom
+            from "{self.cfg.input_schema}"."{self.cfg.tables.centerline}";
+        """
+        self.execute(sql_simplify)
+        self.set_table_owner(self.cfg.input_schema, self.cfg.tables.centerline_simplified)
+
+        # cut into segments
+        debug('cutting centerline into segments')
+        sql_segments = f"""
+            drop table if exists "{self.cfg.input_schema}"."{self.cfg.tables.centerline_segments}";
+            create table "{self.cfg.input_schema}"."{self.cfg.tables.centerline_segments}" as
+            select (st_dump(geom)).* from "{self.cfg.input_schema}"."{self.cfg.tables.centerline_simplified}";
+        """
+        self.execute(sql_segments)
+        self.set_table_owner(self.cfg.input_schema, self.cfg.tables.centerline_segments)
+
+    def calculate_canyon_geometry(self):
+        progress('calculating street canyon width and orientation')
+
+        # create 'hairy' perpendicular segments
+        sql_hairy = f"""
+            drop table if exists "{self.cfg.input_schema}"."{self.cfg.tables.centerline_hairy}";
+            create table "{self.cfg.input_schema}"."{self.cfg.tables.centerline_hairy}" as
+            with
+                geodata as (select row_number() over() as id, geom from "{self.cfg.input_schema}"."{self.cfg.tables.centerline_segments}" where st_length(geom)>40),
+                linecut as (select id, st_linesubstring(d.geom, substart, case when subend > 1 then 1 else subend end) geom
+                            from (select id, geom, st_length(((geom)::geometry)) len, 15 sublen from geodata) as d
+                                cross join lateral (select i, (sublen * i)/len as substart, (sublen * (i+1))/len as subend
+                                                    from generate_series(0, floor( d.len / sublen)::integer) as t(i)
+                                                    where (sublen * i)/len <> 1.0) as d2),
+                rotate as (select id, (st_rotate(st_collect(geom), -pi()/2, st_centroid(geom))) geom from linecut group by id, geom),
+                tbld as (select id, (st_dump(geom)).geom geom from rotate),
+                bl as (select (st_dump(st_makeline(st_startpoint(geom), st_endpoint(geom)))).geom as geom from tbld)
+            select st_makeline(st_translate(a, sin(az2) * len, cos(az2) * len), st_centroid(st_collect(a, b))) as geom_1,
+                   st_makeline(st_centroid(st_collect(a, b)), st_translate(b,sin(az1) * len, cos(az1) * len)) as geom_2,
+                   st_centroid(st_collect(a, b)) as geom_center
+            from (
+                select a, b, st_azimuth(a,b) as az1, st_azimuth(b, a) as az2, 50 as len
+                from (select st_startpoint(geom) as a, st_endpoint(geom) as b from bl) as sub
+            ) as sub2;
+
+            create index if not exists hairy_g1_idx on "{self.cfg.input_schema}"."{self.cfg.tables.centerline_hairy}" using gist(geom_1);
+            create index if not exists hairy_g2_idx on "{self.cfg.input_schema}"."{self.cfg.tables.centerline_hairy}" using gist(geom_2);
+            alter table "{self.cfg.input_schema}"."{self.cfg.tables.centerline_hairy}" add column if not exists gid serial;
+        """
+        self.execute(sql_hairy)
+        self.set_table_owner(self.cfg.input_schema, self.cfg.tables.centerline_hairy)
+
+        # calculate intersections with buildings
+        debug('finding building intersection points')
+        sql_intersections = f"""
+            drop table if exists "{self.cfg.input_schema}"."{self.cfg.tables.centerline_intersections}";
+            create table "{self.cfg.input_schema}"."{self.cfg.tables.centerline_intersections}" as
+            select
+                cs.*, l_1.point_1, l_2.point_2,
+                st_distance(l_1.point_1, l_2.point_2),
+                st_collect(array[cs.geom_center, cs.geom_1, cs.geom_2, l_1.point_1, l_2.point_2]) as geom_col
+            from "{self.cfg.input_schema}"."{self.cfg.tables.centerline_hairy}" cs
+                join lateral (select (st_dump(st_intersection(cs.geom_1, st_boundary(l.geom)))).geom as point_1
+                              from "{self.cfg.input_schema}"."{self.cfg.tables.landcover}" l
+                              where l.type between {self.cfg.type_range.building_min} and {self.cfg.type_range.building_max} and st_intersects(cs.geom_1, l.geom)
+                              order by st_distance(cs.geom_center, l.geom) asc limit 1) as l_1 on true
+                join lateral (select (st_dump(st_intersection(cs.geom_2, st_boundary(l.geom)))).geom as point_2
+                              from "{self.cfg.input_schema}"."{self.cfg.tables.landcover}" l
+                              where l.type between {self.cfg.type_range.building_min} and {self.cfg.type_range.building_max} and st_intersects(cs.geom_2, l.geom)
+                              order by st_distance(cs.geom_center, l.geom) asc limit 1) as l_2 on true;
+        """
+        self.execute(sql_intersections)
+        self.set_table_owner(self.cfg.input_schema, self.cfg.tables.centerline_intersections)
+
+    def _raster_box_filter(self, alias):
+        """WHERE clause keeping the raster tiles that touch the processing box
+        (whole tiles), or '' without a box."""
+        box = self._clip_box()
+        if box is None:
+            return ''
+        return f'where st_intersects({alias}.rast, st_transform({box}, st_srid({alias}.rast)))'
+
+    def _building_box_filter(self, alias):
+        """AND clause keeping the building polygons that touch the processing
+        box (whole polygons, so wall and roof areas stay complete)."""
+        box = self._clip_box()
+        if box is None:
+            return ''
+        return f'and st_intersects({alias}.geom, {box})'
+
+    def calculate_centerline_results(self):
+        progress('computing canyon orientation, width and building heights')
+        schema = self.cfg.input_schema
+
+        # pixel-centre table from buildings raster — used for height lookups here and in building front area
+        debug('creating build_pixel from buildings raster')
+        sql_pixel = f"""
+            drop table if exists "{schema}"."{self.cfg.tables.build_pixel}";
+            create table "{schema}"."{self.cfg.tables.build_pixel}" as
+            -- lateral: the (f(x)).a, (f(x)).b form calls st_pixelaspoints
+            -- once per column, i.e. walks every raster tile twice.
+            -- The pixel points go into {self.cfg.srid}, the srid of the canyon
+            -- and wall points they are matched with: left in the raster srid
+            -- (e.g. 3035 next to a 32633 landcover) the 100 m search compares
+            -- coordinates of two systems, finds nothing and every height is null.
+            select st_transform(p.geom, {int(self.cfg.srid)}) as geom,
+                   p.val  as val
+            from "{schema}"."{self.cfg.tables.buildings_height}" b,
+                 lateral st_pixelaspoints(b.rast) p
+            {self._raster_box_filter('b')};
+
+            -- the nearest-pixel laterals below and in the front-area step scan
+            -- this table per point; without the index they are minutes-per-query
+            create index if not exists {self.cfg.tables.build_pixel}_geom_idx
+            on "{schema}"."{self.cfg.tables.build_pixel}" using gist(geom);
+            analyze "{schema}"."{self.cfg.tables.build_pixel}";
+        """
+        self.execute(sql_pixel)
+        self.set_table_owner(schema, self.cfg.tables.build_pixel)
+
+        debug('computing canyon orientation and width from intersections')
+        sql_results = f"""
+            drop table if exists "{schema}"."{self.cfg.tables.centerline_results}";
+            create table "{schema}"."{self.cfg.tables.centerline_results}" as
+            select
+                gid,
+                degrees(st_azimuth(point_1, point_2)) + 90.0 as orientation,
+                st_distance(point_1, point_2)                      as width,
+                b1.val                                             as val_1,
+                b2.val                                             as val_2,
+                geom_center                                        as geom
+            from "{schema}"."{self.cfg.tables.centerline_intersections}"
+                -- <-> walks the gist index nearest-first (exact distance for
+                -- points); order by st_distance sorted every pixel within
+                -- 100 m (~31k per lookup on a 1 m raster)
+                left join lateral (
+                    select bp.val
+                    from "{schema}"."{self.cfg.tables.build_pixel}" bp
+                    where st_dwithin(bp.geom, point_1, 100.0)
+                    order by bp.geom <-> point_1 asc limit 1
+                ) b1 on true
+                left join lateral (
+                    select bp.val
+                    from "{schema}"."{self.cfg.tables.build_pixel}" bp
+                    where st_dwithin(bp.geom, point_2, 100.0)
+                    order by bp.geom <-> point_2 asc limit 1
+                ) b2 on true;
+        """
+        self.execute(sql_results)
+
+        debug('replacing centerline table with results')
+        sql_replace = f"""
+            drop table if exists "{schema}"."{self.cfg.tables.centerline}";
+            create table "{schema}"."{self.cfg.tables.centerline}" as
+                select * from "{schema}"."{self.cfg.tables.centerline_results}";
+            drop table "{schema}"."{self.cfg.tables.centerline_results}";
+        """
+        self.execute(sql_replace)
+        self.set_table_owner(schema, self.cfg.tables.centerline)
+
+        # an empty result here means no canyon-building intersections were found;
+        # letting it pass would leave an empty centerline for slurb_driver to choke on
+        if not self.fetchone(f'select count(*) from "{schema}"."{self.cfg.tables.centerline}"'):
+            msg = ('centerline results are empty: no street canyon / building intersections '
+                   'were found. Check that the landcover contains building-type polygons '
+                   'adjacent to street polygons (types 201-203) and that all inputs share '
+                   'the same srid.')
+            error(msg)
+            raise ValueError(msg)
+
+    def calculate_building_front_area(self):
+        progress('calculating building front areas')
+        schema = self.cfg.input_schema
+
+        sql_wall = f"""
+            drop table if exists outer_wall_full;
+            create temp table outer_wall_full as
+            select st_forcerhr((st_dump(st_union(st_buffer(l.geom, 0.001)))).geom) as geom
+            from "{schema}"."{self.cfg.tables.landcover}" as l
+            where l.type between {self.cfg.type_range.building_min} and {self.cfg.type_range.building_max}
+                {self._building_box_filter('l')};
+            alter table outer_wall_full add column id serial;
+            -- the building_area update below looks every building up by id;
+            -- without the key that is one full scan per building (quadratic)
+            alter table outer_wall_full add primary key (id);
+            analyze outer_wall_full;
+
+            drop table if exists "{schema}"."{self.cfg.tables.outer_wall}";
+            create table "{schema}"."{self.cfg.tables.outer_wall}" as
+            with outer_wall as (select id, st_boundary(geom) as geom from outer_wall_full)
+            select
+                id,
+                st_linesubstring(d.geom, substart, case when subend > 1 then 1 else subend end) as geom,
+                st_centroid(st_linesubstring(d.geom, substart, case when subend > 1 then 1 else subend end)) as point,
+                null::numeric as building_height
+            from (select id, geom, st_length(geom) len, 15 sublen from outer_wall) as d
+                cross join lateral (select i, (sublen * i)/len as substart, (sublen * (i+1))/len as subend
+                                     from generate_series(0, floor(d.len / sublen)::integer) as t(i)
+                                     where (sublen * i)/len <> 1.0) as d2;
+
+            -- primary: direct raster nearest value. Transform the point into the
+            -- raster srid instead of the raster into {self.cfg.srid}: transforming
+            -- the raster copies every tile per row and defeats its spatial index.
+            update "{schema}"."{self.cfg.tables.outer_wall}" ow
+            set building_height = (
+                select st_nearestvalue(b.rast, st_transform(ow.point, st_srid(b.rast)))
+                from "{schema}"."{self.cfg.tables.buildings_height}" b
+                where st_intersects(b.rast, st_transform(ow.point, st_srid(b.rast)))
+                limit 1
+            );
+
+            -- fallback: nearest build_pixel within 100 m
+            update "{schema}"."{self.cfg.tables.outer_wall}" ow
+            set building_height = (
+                select bp.val from "{schema}"."{self.cfg.tables.build_pixel}" bp
+                where st_dwithin(bp.geom, ow.point, 100.0)
+                order by bp.geom <-> ow.point asc limit 1
+            )
+            where building_height is null;
+
+            -- default where raster coverage is missing
+            update "{schema}"."{self.cfg.tables.outer_wall}"
+            set building_height = {self.cfg.default_building_height}
+            where building_height is null;
+        """
+        self.execute(sql_wall)
+        self.set_table_owner(schema, self.cfg.tables.outer_wall)
+
+        debug('aggregating wall and roof areas per building polygon')
+        sql_area = f"""
+            drop table if exists "{schema}"."{self.cfg.tables.building_area}";
+            create table "{schema}"."{self.cfg.tables.building_area}" as
+            select
+                id,
+                sum(building_height * st_length(geom)) as wall_area,
+                null::numeric                           as roof_area,
+                null::geometry                          as geom
+            from "{schema}"."{self.cfg.tables.outer_wall}"
+            group by id;
+            alter table "{schema}"."{self.cfg.tables.building_area}" add primary key (id);
+
+            update "{schema}"."{self.cfg.tables.building_area}" ba
+            set (roof_area, geom) = (
+                select st_area(geom), geom
+                from outer_wall_full owf
+                where ba.id = owf.id
+            );
+        """
+        self.execute(sql_area)
+        self.set_table_owner(schema, self.cfg.tables.building_area)
+
+        if not self.fetchone(f'select count(*) from "{schema}"."{self.cfg.tables.building_area}"'):
+            msg = ('building_area results are empty: no building-type polygons produced '
+                   'wall/roof areas. Check the landcover building types and the buildings '
+                   'height raster coverage.')
+            error(msg)
+            raise ValueError(msg)
+
+    def cleanup(self):
+        if self.cfg.clean_up:
+            debug('cleaning up temporary spatial structures')
+            schema = self.cfg.input_schema
+            for table in [self.cfg.tables.centerline_hairy, self.cfg.tables.build_pixel]:
+                self.execute(f'drop table if exists "{schema}"."{table}" cascade')

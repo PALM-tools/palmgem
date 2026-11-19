@@ -1,0 +1,194 @@
+# PALM Input Data Standard (PIDS) compliance spec, consumed by src/utils/pids.py.
+#
+# Structure per driver type:
+#   required_global_attributes : global attrs every driver file must carry
+#   required_dimensions        : dimensions that must exist (size > 0)
+#   coordinate_variables       : 1-D coordinate vars checked for monotonic,
+#                                uniformly spaced values
+#   exempt_variables           : variables excluded from the generic
+#                                long_name/units/_FillValue expectations
+#   variable_rules             : per-variable hard rules (violations are errors;
+#                                generic expectations only produce warnings):
+#       dims           - exact dimension names, in order
+#       dtype_kind     - numpy dtype kind: f (float), i (int), b/i1 (byte)
+#       required_attrs - attributes that must be present on the variable
+#
+# This is a practical subset of PIDS aimed at what PALM-GeM writes; extend the
+# variable_rules as more variables need pinning.
+
+pids_version: '1.12'
+
+static:
+    required_global_attributes:
+        - Conventions
+        - origin_x
+        - origin_y
+        - origin_z
+        - origin_lat
+        - origin_lon
+        - origin_time
+        - rotation_angle
+    required_dimensions: [x, y]
+    # cross-variable surface rules (src/utils/pids.py check_static_consistency;
+    # value = rule set: static | slurb, True = static):
+    # zt everywhere, one surface type per cell, building vars on the same
+    # cells, no zero-height buildings, soil under vegetation/pavement
+    consistency_checks: static
+    coordinate_variables: [x, y, z, zlad, zsoil]
+    # the cut-cell topography mesh arrays (cct_driver) have no missing values
+    # by design; their geometry is checked by src/utils/cct_validation.py,
+    # which runs whenever the file has a cct_num_faces dimension
+    exempt_variables: [crs, E_UTM, N_UTM, lon, lat,
+                       cct_max_num_vertices_per_face, cct_dim_vertex_coords, cct_dim_vertex_shifts,
+                       cct_vertices, cct_vertex_coords, cct_vertex_shifts, cct_vertices_per_face,
+                       cct_face_center, cct_3d_grid_indices, cct_offsets, cct_face_normal_vector,
+                       cct_face_area, cct_num_vertices_per_face, cct_surface_type_classification]
+    variable_rules:
+        cct_vertices:
+            dims: [dim_3d, cct_num_vert]
+            dtype_kind: f
+        cct_vertex_coords:
+            dims: [cct_dim_vertex_coords, cct_num_vert]
+            dtype_kind: i
+        cct_vertices_per_face:
+            dims: [cct_max_num_vertices_per_face, cct_num_faces]
+            dtype_kind: i
+        cct_face_normal_vector:
+            dims: [dim_3d, cct_num_faces]
+            dtype_kind: f
+        cct_face_area:
+            dims: [cct_num_faces]
+            dtype_kind: f
+        cct_3d_grid_indices:
+            dims: [dim_3d, cct_num_faces]
+            dtype_kind: i
+        cct_surface_type_classification:
+            dims: [cct_num_faces]
+            dtype_kind: i
+        zt:
+            dims: [y, x]
+            dtype_kind: f
+            required_attrs: [units, long_name, _FillValue]
+        vegetation_type:
+            dims: [y, x]
+            required_attrs: [long_name, _FillValue]
+        pavement_type:
+            dims: [y, x]
+            required_attrs: [long_name, _FillValue]
+        water_type:
+            dims: [y, x]
+            required_attrs: [long_name, _FillValue]
+        soil_type:
+            dims: [y, x]
+            required_attrs: [long_name, _FillValue]
+        buildings_2d:
+            dims: [y, x]
+            dtype_kind: f
+            required_attrs: [units, long_name, _FillValue, lod]
+        building_id:
+            dims: [y, x]
+            dtype_kind: i
+            required_attrs: [long_name, _FillValue]
+        building_type:
+            dims: [y, x]
+            required_attrs: [long_name, _FillValue]
+        buildings_3d:
+            dims: [z, y, x]
+            required_attrs: [long_name, _FillValue, lod]
+        lad:
+            dims: [zlad, y, x]
+            dtype_kind: f
+            required_attrs: [long_name, _FillValue]
+        bad:
+            dims: [zlad, y, x]
+            dtype_kind: f
+            required_attrs: [long_name, _FillValue]
+
+slurb:
+    # SLURB rules (src/utils/pids.py check_slurb_consistency), from PIDS_SLURB
+    # and the SLUrb guide: plan <= urban fraction, fractions in [0, 1], height
+    # and aspect ratio > 0, orientation in [0, 360) or fill (isotropic);
+    # warnings for SLUrb cells (urban_fraction >= 1 %) missing plan/height/H/W,
+    # heights > 60 m and values in cells SLUrb ignores
+    consistency_checks: slurb
+    required_global_attributes:
+        - Conventions
+        - origin_x
+        - origin_y
+        - origin_z
+        - origin_lat
+        - origin_lon
+        - origin_time
+        - rotation_angle
+    required_dimensions: [x, y]
+    coordinate_variables: [x, y, nroad_3d, nroof_3d, nwall_3d, nwin_3d]
+    exempt_variables: [crs, E_UTM, N_UTM, lon, lat]
+    variable_rules:
+        building_plan_area_fraction:
+            dims: [y, x]
+            dtype_kind: f
+            required_attrs: [long_name, _FillValue]
+        building_frontal_area_fraction:
+            dims: [y, x]
+            dtype_kind: f
+            required_attrs: [long_name, _FillValue]
+        building_height:
+            dims: [y, x]
+            dtype_kind: f
+            required_attrs: [long_name, _FillValue]
+        street_canyon_aspect_ratio:
+            dims: [y, x]
+            dtype_kind: f
+            required_attrs: [long_name, _FillValue]
+        street_canyon_orientation:
+            dims: [y, x]
+            dtype_kind: f
+            required_attrs: [long_name, _FillValue]
+        c_road:
+            dims: [nroad_3d, y, x]
+            dtype_kind: f
+            required_attrs: [units, long_name, _FillValue]
+        dz_road:
+            dims: [nroad_3d, y, x]
+            dtype_kind: f
+            required_attrs: [units, long_name, _FillValue]
+        lambda_road:
+            dims: [nroad_3d, y, x]
+            dtype_kind: f
+            required_attrs: [units, long_name, _FillValue]
+        c_roof:
+            dims: [nroof_3d, y, x]
+            dtype_kind: f
+            required_attrs: [units, long_name, _FillValue]
+        dz_roof:
+            dims: [nroof_3d, y, x]
+            dtype_kind: f
+            required_attrs: [units, long_name, _FillValue]
+        lambda_roof:
+            dims: [nroof_3d, y, x]
+            dtype_kind: f
+            required_attrs: [units, long_name, _FillValue]
+        c_wall:
+            dims: [nwall_3d, y, x]
+            dtype_kind: f
+            required_attrs: [units, long_name, _FillValue]
+        dz_wall:
+            dims: [nwall_3d, y, x]
+            dtype_kind: f
+            required_attrs: [units, long_name, _FillValue]
+        lambda_wall:
+            dims: [nwall_3d, y, x]
+            dtype_kind: f
+            required_attrs: [units, long_name, _FillValue]
+        c_window:
+            dims: [nwin_3d, y, x]
+            dtype_kind: f
+            required_attrs: [units, long_name, _FillValue]
+        dz_window:
+            dims: [nwin_3d, y, x]
+            dtype_kind: f
+            required_attrs: [units, long_name, _FillValue]
+        lambda_window:
+            dims: [nwin_3d, y, x]
+            dtype_kind: f
+            required_attrs: [units, long_name, _FillValue]

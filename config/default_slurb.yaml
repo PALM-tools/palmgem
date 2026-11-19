@@ -12,290 +12,382 @@ center_line_length: 15.0 # m
 building_outer_wall_lenght: 15.0 # m
 default_building_height: 20.0 # m
 
+# prepare_slurb works on the input schema. It processes only the domain
+# (from domain.cent_x/cent_y, nx/ny, dx/dy) plus this margin: street polygons
+# are clipped to that box, buildings and raster tiles touching it are taken
+# whole. The margin must exceed the canyon probe (50 m) plus
+# canyon_search_radius. 0 = process the whole input schema (slow when it is
+# much larger than the domain; the result then serves any domain inside it).
+slurb_clip_margin: 300.0 # m
+# point spacing (m) the street polygon outlines are densified to for the
+# Voronoi centre lines; larger = faster, coarser centre lines
+slurb_centerline_interpolation: 0.5 # m
+
 # general rules
 min_plan_area: 0.2  # fraction of buildings where slurm is applied, else use LSM only
 
+# reference window for the urban morphology. The SLUrb guide: the
+# morphological parameters "are well-defined only for reference areas of at
+# least 100x100 m2", so plan/urban/frontal fractions and building height are
+# averaged over a sliding window centred on each cell (odd cell count, e.g.
+# 11 cells = 110 m at dx = 10 m), and min_plan_area is applied to the windowed
+# plan fraction in both drivers. 0 (or <= dx) = per grid cell.
+slurb_reference_size: 100.0 # m
+
+# street canyon assignment to urban cells: each urban cell takes up to
+# canyon_neighbours nearest canyon samples (points on the street centre line)
+# within canyon_search_radius; 50 m is the probe length prepare_slurb uses to
+# find the buildings on both sides of a street
+canyon_search_radius: 50.0 # m
+canyon_neighbours: 3
+# canyon samples narrower than this are gaps between neighbouring buildings,
+# not streets (a 0.3 m gap next to 20 m buildings gave H/W = 76)
+canyon_min_width: 3.0 # m
+# upper limit of street_canyon_aspect_ratio (H/W); deep real canyons reach ~3-4
+slurb_max_aspect_ratio: 5.0
+# upper limit of building_plan_area_fraction / urban_fraction: SLUrb splits the
+# urban area into buildings and street canyon, and a building share near 1
+# leaves a canyon of ~0 width (NaN in the surface spinup on a 50 m grid)
+slurb_max_plan_urban_ratio: 0.9
+# orientation only where the streets within canyon_search_radius share a
+# direction: coherence R = |length-weighted mean of doubled street
+# bearings| (0 = all directions, 1 = parallel). Below the threshold the
+# orientation is written as fill value = isotropic canyon (PIDS_SLURB).
+# 0 = keep every orientation.
+canyon_orientation_min_coherence: 0.4
+
+# building_frontal_area_fraction = facade area * frontal_area_factor / cell area.
+# 0.31831 = 1/pi: frontal area averaged over all wind directions for
+# convex buildings (Cauchy: mean projected width = perimeter / pi). 0.25 = wind
+# normal to one face of a square building; 1.0 = full facade-to-plan ratio.
+frontal_area_factor: 0.31831
+
+# how the static driver describes the land surface in SLURB mode.
+# PALM-SLUrb models the urban part of a cell (buildings + streets, see
+# urban_fraction) and PALM-LSM the rest, so the static driver keeps the real
+# LSM types outside SLUrb cells and gives SLUrb cells (building plan fraction
+# >= min_plan_area) their dominant non-urban type (vegetation or water).
+slurb_lsm_bare_soil: False    # True = legacy: every non-building landcover type -> 101 (bare soil)
+slurb_lsm_default_type: 103   # landcover type for SLUrb cells without vegetation/water (103 = short grass)
+
 # define variable with attributes
+# NOTE: only variables actually derived from the input sources are
+# written to the slurb driver. The commented entries are constant placeholders
+# (hardcoded defaults, not calculated from any input) — re-enable them once
+# more detailed inputs are handled.
 slurb_vars_done: [
-    'deep_soil_temperature',
+#    'deep_soil_temperature',        # constant 273.15 K placeholder
     'building_frontal_area_fraction',
     'building_height',
-    'building_indoor_temperature',
+#    'building_indoor_temperature',  # constant 273.15 K placeholder
     'building_plan_area_fraction',
-    'building_type',
-    'pavement_type',
+    'building_type',                 # median landcover building type (9xx - 900) of the cell, nearest cell where it has none
+#    'pavement_type',                # constant type 1 placeholder
     'street_canyon_aspect_ratio',
-    'street_canyon_orientation'
+    'street_canyon_orientation',
+    'urban_fraction'                 # building + pavement share of the cell
     ]
 slurb_vars:
     deep_soil_temperature:
-        vt: 'f8'
+        vt: 'f4'
         long_name: 'deep soil temperature'
         units: 'K'
         dims: 'yx'
-        
+
     building_frontal_area_fraction:
-        vt: 'f8'
+        vt: 'f4'
         long_name: 'building frontal area fraction'
         units: '1'
         dims: 'yx'
-    
+
     building_height:
-        vt: 'f8'
+        vt: 'f4'
         long_name: 'mean building height'
         units: 'm'
         dims: 'yx'
-    
+
     building_indoor_temperature:
-        vt: 'f8'
+        vt: 'f4'
         long_name: 'indoor air temperature'
         units: 'K'
         dims: 'yx'
-    
+
     building_plan_area_fraction:
-        vt: 'f8'
+        vt: 'f4'
         long_name: 'building plan area fraction'
         units: '1'
         dims: 'yx'
-    
+
     building_type:
         vt: 'b'
         long_name: 'building type classification'
         units: '1'
         dims: 'yx'
-        
+
     pavement_type:
         vt: 'b'
         long_name: 'pavement type classification'
         units: '1'
         dims: 'yx'
-    
+
     street_canyon_aspect_ratio:
-        vt: 'f8'
+        vt: 'f4'
         long_name: 'street canyon aspect ratio'
         units: '1'
         dims: 'yx'
-    
+
     street_canyon_orientation:
-        vt: 'f8'
+        vt: 'f4'
         long_name: 'street canyon orientation angle'
-        units: '1'
+        units: 'deg'                 # compass heading of the canyon axis, 0 = south-north (PIDS_SLURB)
         dims: 'yx'
-        
+
     urban_fraction:
-        vt: 'f8'
+        vt: 'f4'
         long_name: 'urban plan area fraction'
         units: '1'
         dims: 'yx'
-        
+
     # Additional info
     albedo_road:
-        vt: 'f8'
+        vt: 'f4'
         long_name: 'road surface shortwave albedo'
         units: '1'
         dims: 'yx'
-        
+
     albedo_roof:
-        vt: 'f8'
+        vt: 'f4'
         long_name: 'roof surface shortwave albedo'
         units: '1'
         dims: 'yx'
-        
+
     albedo_wall:
-        vt: 'f8'
+        vt: 'f4'
         long_name: 'wall surface shortwave albedo'
         units: '1'
         dims: 'yx'
-        
+
     albedo_window:
-        vt: 'f8'
+        vt: 'f4'
         long_name: 'window surface shortwave albedo'
         units: '1'
         dims: 'yx'
-        
+
     c_road:
-        vt: 'f8'
+        vt: 'f4'
         long_name: 'road layer volumetric heat capacity'
         units: 'J/m3/K'
         dims: 'nroadyx'
-        
+
     c_roof:
-        vt: 'f8'
+        vt: 'f4'
         long_name: 'roof layer volumetric heat capacity'
         units: 'J/m3/K'
         dims: 'nroofyx'
-        
+
     c_wall:
-        vt: 'f8'
+        vt: 'f4'
         long_name: 'wall layer volumetric heat capacity'
         units: 'J/m3/K'
         dims: 'nwallyx'
-        
+
     c_window:
-        vt: 'f8'
+        vt: 'f4'
         long_name: 'window layer volumetric heat capacity'
         units: 'J/m3/K'
         dims: 'nwinyx'
-        
+
     dz_road:
-        vt: 'f8'
+        vt: 'f4'
         long_name: 'road layer thickness'
         units: 'm'
         dims: 'nroadyx'
-        
+
     dz_roof:
-        vt: 'f8'
+        vt: 'f4'
         long_name: 'roof layer thickness'
         units: 'm'
         dims: 'nroofyx'
-        
+
     dz_wall:
-        vt: 'f8'
+        vt: 'f4'
         long_name: 'wall layer thickness'
         units: 'm'
         dims: 'nwallyx'
-        
+
     dz_window:
-        vt: 'f8'
+        vt: 'f4'
         long_name: 'window layer thickness'
         dims: 'nwinyx'
         units: 'm'
-        
+
     emiss_road:
-        vt: 'f8'
+        vt: 'f4'
         long_name: 'road surface emissivity'
         units: '1'
         dims: 'yx'
-        
+
     emiss_roof:
-        vt: 'f8'
+        vt: 'f4'
         long_name: 'roof surface emissivity'
         units: '1'
         dims: 'yx'
-        
+
     emiss_wall:
-        vt: 'f8'
+        vt: 'f4'
         long_name: 'wall surface emissivity'
         units: '1'
         dims: 'yx'
-        
+
     emiss_window:
-        vt: 'f8'
+        vt: 'f4'
         long_name: 'window surface emissivity'
         units: '1'
         dims: 'yx'
-        
+
     lambda_road:
-        vt: 'f8'
+        vt: 'f4'
         long_name: 'road layer thermal conductivity'
         units: 'W/m/K'
         dims: 'nroadyx'
-        
+
     lambda_roof:
-        vt: 'f8'
+        vt: 'f4'
         long_name: 'roof layer thermal conductivity'
         units: 'W/m/K'
         dims: 'nroofyx'
-        
+
     lambda_wall:
-        vt: 'f8'
+        vt: 'f4'
         long_name: 'wall layer thermal conductivity'
         units: 'W/m/K'
         dims: 'nwallyx'
-        
+
     lambda_window:
-        vt: 'f8'
+        vt: 'f4'
         long_name: 'window layer thermal conductivity'
         units: 'W/m/K'
         dims: 'nwinyx'
-        
+
     qsws_external:
-        vt: 'f8'
+        vt: 'f4'
         long_name: 'latent heat flux from external sources'
         units: 'W/m^2'
-        
+
     shf_external:
-        vt: 'f8'
+        vt: 'f4'
         long_name: 'sensible heat flux from external sources'
         units: 'W/m^2'
-        
+
     shf_traffic:
-        vt: 'f8'
+        vt: 'f4'
         long_name: 'sensible heat flux from traffic'
         units: 'W/m^2'
-        
+
     transmissivity_window:
-        vt: 'f8'
+        vt: 'f4'
         long_name: 'window layer shortwave transmissivity'
         units: '1'
-        
+
     window_fraction:
-        vt: 'f8'
+        vt: 'f4'
         long_name: 'window fraction'
         units: '1'
         dims: 'yx'
-        
+
     z0_road:
-        vt: 'f8'
+        vt: 'f4'
         long_name: 'road surface aerodynamic roughness length for momentum'
         units: 'm'
         dims: 'yx'
-        
+
     z0_roof:
-        vt: 'f8'
+        vt: 'f4'
         long_name: 'roof surface aerodynamic roughness length for momentum'
         units: 'm'
         dims: 'yx'
-        
+
     z0_urb:
-        vt: 'f8'
+        vt: 'f4'
         long_name: 'urban roughness length for momentum'
         units: 'm'
         dims: 'yx'
-        
+
     z0_wall:
-        vt: 'f8'
+        vt: 'f4'
         long_name: 'wall surface aerodynamic roughness length for momentum'
         units: 'm'
         dims: 'yx'
-        
+
     z0_window:
-        vt: 'f8'
+        vt: 'f4'
         long_name: 'window surface aerodynamic roughness length for momentum'
         units: 'm'
         dims: 'yx'
-        
+
     z0h_road:
-        vt: 'f8'
+        vt: 'f4'
         long_name: 'road surface aerodynamic roughness length heat'
         units: 'm'
         dims: 'yx'
-        
+
     z0h_roof:
-        vt: 'f8'
+        vt: 'f4'
         long_name: 'roof surface aerodynamic roughness length heat'
         units: 'm'
         dims: 'yx'
-        
+
     z0h_urb:
-        vt: 'f8'
+        vt: 'f4'
         long_name: 'urban surface aerodynamic roughness length heat'
         units: 'm'
         dims: 'yx'
-        
+
     z0h_wall:
-        vt: 'f8'
+        vt: 'f4'
         long_name: 'wall surface aerodynamic roughness length heat'
         units: 'm'
         dims: 'yx'
-        
+
     z0h_window:
-        vt: 'f8'
+        vt: 'f4'
         long_name: 'windows surface aerodynamic roughness length heat'
         units: 'm'
         dims: 'yx'
-        
 
+slurb_vars_defaults:
+  # albedo values
+  albedo_road: 0.10
+  albedo_roof: 0.17
+  albedo_wall: 0.12
+  albedo_window: 0.12
+  # emissivity values
+  emiss_road: 0.90
+  emiss_roof: 0.90
+  emiss_wall: 0.85
+  emiss_window: 0.92
+  # roughness lengths (m)
+  z0_road: 0.01
+  z0_roof: 0.01
+  z0_wall: 0.01
+  z0_window: 0.001
+  # thermal properties (heat capacity J/m³K, conductivity W/mK, thickness m)
+  road:
+    c: 1.5e6
+    lambda: 0.8
+    dz: [0.05, 0.2, 0.3] # multi-layer support
+  roof:
+    c: 1.2e6
+    lambda: 0.5
+    dz: [0.02, 0.1, 0.15]
+  wall:
+    c: 1.0e6
+    lambda: 0.7
+    dz: [0.02, 0.2, 0.1]
+  window:
+    c: 2.0e6
+    lambda: 1.0
+    dz: [0.01]
 
 
 # first iteration, fill these:
